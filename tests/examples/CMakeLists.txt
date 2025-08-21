@@ -1,0 +1,3 @@
+add_subdirectory(basic_counter)
+add_subdirectory(memory_array)
+add_subdirectory(generate_example)
