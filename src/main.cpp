@@ -6,6 +6,47 @@
 
 using namespace sv2sc;
 
+// Convert VCS arguments to translation options
+TranslationOptions convertVCSToTranslationOptions(const translator::VCSArguments& args) {
+    TranslationOptions options;
+    
+    // Core file processing
+    options.inputFiles = args.inputFiles;
+    options.outputDir = args.outputDir;
+    options.topModule = args.topModule;
+    
+    // SystemC generation options
+    options.generateTestbench = args.generateTestbench;
+    options.clockSignal = args.clockSignal;
+    options.resetSignal = args.resetSignal;
+    options.enableSynthesis = args.enableSynthesis;
+    
+    // Language and compilation options  
+    options.enableSystemVerilog = args.enableSystemVerilog;
+    options.timescale = args.timescale;
+    options.enable64Bit = args.enable64Bit;
+    
+    // Preprocessor and include handling
+    options.includePaths = args.includePaths;
+    options.defineMap = args.defineMap;
+    options.undefines = args.undefines;
+    
+    // Library and dependency management
+    options.libraryPaths = args.libraryPaths;
+    options.libraryFiles = args.libraryFiles;
+    options.fileExtensions = args.libraryExtensions;
+    
+    // Debug and output control
+    options.enableDebug = args.enableDebug;
+    options.enableVerbose = args.enableVerbose;
+    options.outputName = args.outputName;
+    
+    // Legacy defines (for backward compatibility)
+    options.defines = args.defines;
+    
+    return options;
+}
+
 int main(int argc, char* argv[]) {
     try {
         // Parse command line arguments
@@ -17,16 +58,7 @@ int main(int argc, char* argv[]) {
         const auto& args = parser.getArguments();
         
         // Convert VCS arguments to translation options
-        TranslationOptions options;
-        options.inputFiles = args.inputFiles;
-        options.outputDir = args.outputDir;
-        options.topModule = args.topModule;
-        options.generateTestbench = args.generateTestbench;
-        options.enableDebug = args.enableDebug;
-        options.enableVerbose = args.enableVerbose;
-        options.includePaths = args.includePaths;
-        options.defines = args.defines;
-        options.libraryPaths = args.libraryPaths;
+        TranslationOptions options = convertVCSToTranslationOptions(args);
         
         // Create and run translator
         SystemVerilogToSystemCTranslator translator(options);

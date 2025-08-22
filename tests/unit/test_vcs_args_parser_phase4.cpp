@@ -19,7 +19,12 @@ public:
     }
     
     static std::string getTestDataFile(const std::string& filename) {
-        return "/home/mana/workspace/sv2sc/tests/data/vcs_test_files/" + filename;
+        const char* testDataDir = std::getenv("SV2SC_TEST_DATA_DIR");
+        if (testDataDir != nullptr) {
+            return std::string(testDataDir) + "/" + filename;
+        }
+        // Fallback to relative path from project root
+        return "tests/data/vcs_test_files/" + filename;
     }
     
     static void cleanup(const std::string& filename) {
@@ -540,11 +545,11 @@ TEST_CASE("VCS Args Parser - Phase 4: Complex Integration", "[vcs][phase4][integ
     VCSArgsParser parser;
     
     SECTION("Complete Phase 1+2+3+4 example") {
-        // Create temporary files
-        std::string advancedList = TempFileHelper::createTempFile("core.sv\ndesign1.sv\n", ".lst");
-        std::string upfFile = TempFileHelper::createTempFile("UPF power spec\n", ".upf");
-        std::string configFile = TempFileHelper::createTempFile("optimization config\n", ".cfg");
-        std::string ovaFile = TempFileHelper::createTempFile("OVA assertions\n", ".ova");
+        // Use test data files from data directory
+        std::string advancedList = TempFileHelper::getTestDataFile("advanced_list.lst");
+        std::string upfFile = TempFileHelper::getTestDataFile("power.upf");
+        std::string configFile = TempFileHelper::getTestDataFile("optimization.cfg");
+        std::string ovaFile = TempFileHelper::getTestDataFile("assertions.ova");
         
         std::string testFile = TempFileHelper::getTestDataFile("core.sv");
         std::string configArg = "+optconfigfile+" + configFile + "+";

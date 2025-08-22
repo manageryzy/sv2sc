@@ -18,9 +18,14 @@ public:
         return filename;
     }
     
-    // Get path to existing test data file
+    // Get path to existing test data file using environment variable or relative path
     static std::string getTestDataFile(const std::string& filename) {
-        return "/home/mana/workspace/sv2sc/tests/data/vcs_test_files/" + filename;
+        const char* testDataDir = std::getenv("SV2SC_TEST_DATA_DIR");
+        if (testDataDir != nullptr) {
+            return std::string(testDataDir) + "/" + filename;
+        }
+        // Fallback to relative path from project root
+        return "tests/data/vcs_test_files/" + filename;
     }
     
     // Create a file list pointing to test data files

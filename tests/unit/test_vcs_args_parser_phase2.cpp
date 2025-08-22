@@ -19,7 +19,12 @@ public:
     }
     
     static std::string getTestDataFile(const std::string& filename) {
-        return "/home/mana/workspace/sv2sc/tests/data/vcs_test_files/" + filename;
+        const char* testDataDir = std::getenv("SV2SC_TEST_DATA_DIR");
+        if (testDataDir != nullptr) {
+            return std::string(testDataDir) + "/" + filename;
+        }
+        // Fallback to relative path from project root
+        return "tests/data/vcs_test_files/" + filename;
     }
     
     static void cleanup(const std::string& filename) {
@@ -521,10 +526,10 @@ TEST_CASE("VCS Args Parser - Phase 2: Complex Combined Usage", "[vcs][phase2][in
     VCSArgsParser parser;
     
     SECTION("Complete Phase 2 example") {
-        // Create temporary files
-        std::string advancedList = TempFileHelper::createTempFile("core.sv\ndesign1.sv\n", ".lst");
-        std::string libMap = TempFileHelper::createTempFile("work -> /opt/work\n", ".map");
-        std::string guiConfig = TempFileHelper::createTempFile("theme: dark\n", ".cfg");
+        // Use test data files from data directory
+        std::string advancedList = TempFileHelper::getTestDataFile("advanced_list.lst");
+        std::string libMap = TempFileHelper::getTestDataFile("library.map");
+        std::string guiConfig = TempFileHelper::getTestDataFile("gui_config.cfg");
         
         std::string testFile = TempFileHelper::getTestDataFile("core.sv");
         

@@ -18,7 +18,12 @@ public:
     }
     
     static std::string getTestDataFile(const std::string& filename) {
-        return "/home/mana/workspace/sv2sc/tests/data/vcs_test_files/" + filename;
+        const char* testDataDir = std::getenv("SV2SC_TEST_DATA_DIR");
+        if (testDataDir != nullptr) {
+            return std::string(testDataDir) + "/" + filename;
+        }
+        // Fallback to relative path from project root
+        return "tests/data/vcs_test_files/" + filename;
     }
     
     static void cleanup(const std::string& filename) {
@@ -589,13 +594,13 @@ TEST_CASE("VCS Args Parser - Phase 3: Complex Integration", "[vcs][phase3][integ
     VCSArgsParser parser;
     
     SECTION("Complete Phase 1+2+3 example") {
-        // Create temporary files
-        std::string advancedList = TempFileHelper::createTempFile("core.sv\ndesign1.sv\n", ".lst");
-        std::string libMap = TempFileHelper::createTempFile("work -> /opt/work\n", ".map");
-        std::string guiConfig = TempFileHelper::createTempFile("theme: dark\n", ".cfg");
-        std::string assertHier = TempFileHelper::createTempFile("assert hierarchy\n", ".hier");
-        std::string coverageHier = TempFileHelper::createTempFile("coverage hierarchy\n", ".hier");
-        std::string coverageExclude = TempFileHelper::createTempFile("exclude patterns\n", ".exclude");
+        // Use test data files from data directory  
+        std::string advancedList = TempFileHelper::getTestDataFile("advanced_list.lst");
+        std::string libMap = TempFileHelper::getTestDataFile("library.map");
+        std::string guiConfig = TempFileHelper::getTestDataFile("gui_config.cfg");
+        std::string assertHier = TempFileHelper::getTestDataFile("assert_hierarchy.hier");
+        std::string coverageHier = TempFileHelper::getTestDataFile("coverage_hierarchy.hier");
+        std::string coverageExclude = TempFileHelper::getTestDataFile("coverage_exclude.exclude");
         
         std::string testFile = TempFileHelper::getTestDataFile("core.sv");
         

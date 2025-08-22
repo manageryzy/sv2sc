@@ -102,7 +102,7 @@ function(add_sv2sc_test)
             ${TEST_OUTPUT_DIR}
         )
         
-        # Step 4: Add CTest integration
+        # Step 4: Add CTest integration with environment variables
         add_test(
             NAME ${SV2SC_TEST_TEST_NAME}_translation_test
             COMMAND ${CMAKE_COMMAND} 
@@ -115,6 +115,13 @@ function(add_sv2sc_test)
         add_test(
             NAME ${SV2SC_TEST_TEST_NAME}_systemc_simulation
             COMMAND ${SV2SC_TEST_TEST_NAME}_systemc_test
+        )
+        
+        # Set environment variables for tests
+        set_tests_properties(
+            ${SV2SC_TEST_TEST_NAME}_translation_test
+            ${SV2SC_TEST_TEST_NAME}_systemc_simulation
+            PROPERTIES ENVIRONMENT "SV2SC_TEST_DATA_DIR=${CMAKE_SOURCE_DIR}/tests/data/vcs_test_files"
         )
         
         # Set test dependencies
@@ -135,6 +142,12 @@ function(add_sv2sc_test)
                 -DTOP_MODULE=${SV2SC_TEST_TOP_MODULE}
                 -DEXPECTED_PORTS=${SV2SC_TEST_EXPECTED_PORTS}
                 -P ${CMAKE_SOURCE_DIR}/cmake/ValidateTranslation.cmake
+        )
+        
+        # Set environment variables for test
+        set_tests_properties(
+            ${SV2SC_TEST_TEST_NAME}_translation_test
+            PROPERTIES ENVIRONMENT "SV2SC_TEST_DATA_DIR=${CMAKE_SOURCE_DIR}/tests/data/vcs_test_files"
         )
     endif()
     

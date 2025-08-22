@@ -55,6 +55,11 @@ void VCSArgsParser::setupParser() {
 }
 
 bool VCSArgsParser::validateArguments() {
+    // Process file list files and add their contents to input files FIRST
+    if (!processFileListFiles()) {
+        return false;
+    }
+    
     if (args_.inputFiles.empty()) {
         std::cerr << "Error: No input files specified" << std::endl;
         return false;
@@ -179,11 +184,6 @@ bool VCSArgsParser::validateArguments() {
     
     // Process legacy defines format
     processDefines(args_.defines);
-    
-    // Process file list files and add their contents to input files
-    if (!processFileListFiles()) {
-        return false;
-    }
     
     return true;
 }
@@ -1347,8 +1347,15 @@ bool VCSArgsParser::processFileListType(const std::vector<std::string>& fileList
         for (const auto& file : filesFromList) {
             if (file.empty()) continue;
             
-            // Only expand path if it's not already absolute
-            std::string finalPath = std::filesystem::path(file).is_absolute() ? file : expandPath(file);
+            // Resolve path relative to file list directory if not absolute
+            std::string finalPath;
+            if (std::filesystem::path(file).is_absolute()) {
+                finalPath = file;
+            } else {
+                // Resolve relative to the file list's parent directory
+                std::filesystem::path fileListParent = std::filesystem::path(fileListPath).parent_path();
+                finalPath = (fileListParent / file).string();
+            }
             
             if (fileExists(finalPath)) {
                 args_.inputFiles.push_back(std::move(finalPath));

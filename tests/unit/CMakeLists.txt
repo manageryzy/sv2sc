@@ -24,5 +24,8 @@ target_include_directories(unit_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
-# Register tests with CTest
-catch_discover_tests(unit_tests TEST_PREFIX "unit.")
+# Register tests with CTest and set environment variables
+catch_discover_tests(unit_tests 
+    TEST_PREFIX "unit."
+    PROPERTIES ENVIRONMENT "SV2SC_TEST_DATA_DIR=${CMAKE_SOURCE_DIR}/tests/data/vcs_test_files"
+)
