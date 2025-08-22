@@ -16,6 +16,7 @@ option(BUILD_TESTS "Build unit tests" OFF)
 option(BUILD_EXAMPLES "Build examples" ON)
 
 include(cmake/Dependencies.cmake)
+include(cmake/SystemCTestUtils.cmake)
 
 include_directories(include)
 include_directories(external)
