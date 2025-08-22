@@ -3,6 +3,10 @@
 # Create unit tests
 set(UNIT_TEST_SOURCES
     test_vcs_args_parser.cpp
+    test_vcs_args_parser_phase1.cpp
+    test_vcs_args_parser_phase2.cpp
+    test_vcs_args_parser_phase3.cpp
+    test_vcs_args_parser_phase4.cpp
     test_systemc_generator.cpp
 )
 
