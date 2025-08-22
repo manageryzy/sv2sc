@@ -25,6 +25,7 @@ sv2sc is a fully functional SystemVerilog to SystemC translator built with moder
 - **CLI11**: Command-line interface library
 - **spdlog**: Fast logging library
 - **Catch2**: Testing framework (when BUILD_TESTS=ON)
+- **SystemC**: SystemC simulation library (built from source)
 
 ## Build and Development Commands
 
@@ -38,12 +39,8 @@ cmake --build build -j$(nproc)
 
 ### Build Options
 ```bash
-# Enable testing
-cmake -B build -DBUILD_TESTS=ON
-cmake --build build -j$(nproc)
-
-# Enable examples
-cmake -B build -DBUILD_EXAMPLES=ON
+# Enable testing and examples (default)
+cmake -B build -DBUILD_TESTS=ON -DBUILD_EXAMPLES=ON
 cmake --build build -j$(nproc)
 
 # Debug build
@@ -58,17 +55,19 @@ cmake --build build -j$(nproc)
 ### Testing the Translator
 ```bash
 # Basic translation test
-./build/sv2sc -top counter ../tests/examples/basic_counter/counter.sv
+./build/sv2sc -top counter tests/examples/basic_counter/counter.sv
 
 # With VCS-style arguments
 ./build/sv2sc -I ./include +incdir+./rtl -D WIDTH=8 +define+SYNTHESIS -top dut design.sv
 
-# Run all tests
+# Run all tests (includes translation validation and SystemC simulation)
 ctest --test-dir build
 
 # Run specific test categories
 ctest --test-dir build -R unit
 ctest --test-dir build -R integration
+ctest --test-dir build -R translation_test
+ctest --test-dir build -R systemc_simulation
 ```
 
 ## Project Structure
@@ -86,11 +85,22 @@ sv2sc/
 ├── tests/
 │   ├── unit/         # Unit tests
 │   ├── integration/  # Integration tests
-│   └── examples/     # Example translations
-├── cmake/            # CMake modules and dependencies
+│   └── examples/     # Example translations with automated testing
+├── cmake/            # CMake modules and test utilities
+│   ├── Dependencies.cmake           # FetchContent for local third-party deps
+│   ├── SystemCTestUtils.cmake      # Automated testing framework functions
+│   ├── GenerateSystemCTestbench.cmake # SystemC testbench generator
+│   ├── ValidateTranslation.cmake   # Translation quality validation
+│   └── CompareSimulations.cmake    # Simulation comparison framework
+├── third-party/      # Git submodules for dependencies
+│   ├── slang/        # SystemVerilog frontend
+│   ├── fmt/          # Formatting library
+│   ├── CLI11/        # Command line parsing
+│   ├── spdlog/       # Logging library
+│   ├── SystemC/      # SystemC simulation library
+│   └── Catch2/       # Testing framework
 ├── docs/            # Additional documentation
-├── build/           # Build artifacts
-├── external/        # External dependencies
+├── build/           # Build artifacts and generated SystemC code
 └── .claude/         # Claude-specific files
 ```
 
@@ -130,6 +140,8 @@ Input Files → VCS Args Parser → Translation Options
 Slang Frontend → Syntax Tree → AST Visitor
      ↓
 SystemC Generator → Output Files (*.h, *.cpp)
+     ↓
+Automated Testing Framework → Quality Validation & Simulation
 ```
 
 ### Key Design Patterns
@@ -177,6 +189,7 @@ SystemC Generator → Output Files (*.h, *.cpp)
 - **Interfaces**: Basic interface translation
 - **Packages**: Import statements processed
 - **Assertions**: Converted to comments
+- **Generate blocks**: Basic support, complex nesting may cause issues
 
 ### ❌ Not Yet Supported
 - **Classes and objects**: OOP constructs
@@ -266,10 +279,66 @@ SystemC Generator → Output Files (*.h, *.cpp)
 ./build/sv2sc --verbose -top test test.sv
 
 # Check log file
-cat output/sv2sc.log
+cat build/tests/examples/tests/*/sv2sc.log
 ```
 
-## Testing Strategy
+### Translation Quality Analysis
+```bash
+# View detailed translation validation results
+ctest --test-dir build -R translation_test --verbose
+
+# Check generated SystemC files
+ls build/tests/examples/tests/*/
+cat build/tests/examples/tests/counter_sv2sc/counter.h
+```
+
+## Automated Testing Framework
+
+### Translation Validation System
+The project includes a comprehensive automated testing framework that validates translation quality and functionality:
+
+#### CMake Test Functions
+- **`add_sv2sc_test()`**: Basic translation with validation
+- **`add_complete_sv2sc_test_suite()`**: Full workflow including SystemC testbench generation and simulation
+- **`add_verilator_comparison_test()`**: Compare SystemC vs Verilator simulation results
+
+#### Translation Quality Metrics
+- **Port Count Validation**: Verifies expected number of ports are correctly translated
+- **Unknown Expression Detection**: Counts untranslated complex expressions
+- **Skipped Assignment Detection**: Identifies assignments that couldn't be translated
+- **Quality Scoring**: Automatic scoring (EXCELLENT/GOOD/FAIR/NEEDS_WORK)
+
+#### Example Test Results (Current Status)
+- **Counter Module**: 60% quality (FAIR) - 4 ports, 2 unknown expressions, 2 skipped assignments
+- **Memory Module**: 40% quality (NEEDS_WORK) - 7 ports, 5 unknown expressions, 4 skipped assignments
+- **Generate Adder**: 40% quality (NEEDS_WORK) - Complex generate blocks cause translation issues
+
+### SystemC Simulation Testing
+- **Automated Testbench Generation**: Creates appropriate SystemC testbenches for each module type
+- **Clock Signal Handling**: Proper conversion from SystemVerilog clock to SystemC sc_logic signals
+- **Compilation Validation**: Ensures generated SystemC code compiles successfully
+- **Simulation Execution**: Runs SystemC simulations to verify functionality
+
+### Test Execution
+```bash
+# Run all tests
+ctest --test-dir build
+
+# Run with verbose output
+ctest --test-dir build --verbose
+
+# Run specific test types
+ctest --test-dir build -R translation_test  # Translation validation only
+ctest --test-dir build -R systemc_simulation # SystemC simulation only
+ctest --test-dir build -R unit              # Unit tests only
+ctest --test-dir build -R integration       # Integration tests only
+```
+
+### Current Test Status
+- **Unit Tests**: ✅ 100% passing (VCS Args Parser, SystemC Generator)
+- **Integration Tests**: ✅ 100% passing (Translation Flow)
+- **Translation Validation**: ✅ 100% passing (all 3 modules)
+- **SystemC Simulation**: ✅ Counter module working, Memory/Generate_adder have compilation issues due to translation quality
 
 ### Unit Tests
 - Individual component testing
@@ -281,10 +350,16 @@ cat output/sv2sc.log
 - Real SystemVerilog file processing
 - Output validation
 
-### Example Tests
-- Practical usage scenarios
-- Performance benchmarking
-- Compatibility verification
+### Translation Validation Tests
+- Automated quality scoring
+- Port count verification
+- Unknown expression detection
+- Skipped assignment tracking
+
+### SystemC Simulation Tests
+- Testbench generation and compilation
+- Clock/signal handling validation
+- Simulation execution verification
 
 ## Contributing Guidelines
 
@@ -301,12 +376,14 @@ cat output/sv2sc.log
 - Write unit tests for new functionality
 - Document public APIs with Doxygen comments
 - Maintain high test coverage
+- Add translation validation tests for new SystemVerilog features
 
 ### Extensibility Guidelines
 - Use visitor pattern for new AST nodes
 - Extend code generator incrementally
 - Update type mapping tables
 - Maintain backward compatibility
+- Add appropriate test coverage for new features
 
 ## Future Enhancements
 
@@ -316,9 +393,50 @@ cat output/sv2sc.log
 3. **Assertions**: SVA to SystemC assertion mapping
 4. **Coverage**: Functional coverage translation
 5. **DPI Functions**: SystemVerilog DPI integration
+6. **Improved Generate Block Support**: Better handling of complex generate constructs
 
 ### Architecture Improvements
 1. **Plugin System**: Extensible translation rules
 2. **Configuration Files**: Translation behavior customization
 3. **Incremental Compilation**: Large project support
 4. **Parallel Processing**: Multi-file concurrent translation
+5. **Enhanced Error Reporting**: Better diagnostic messages for translation failures
+
+### Testing Framework Enhancements
+1. **Verilator Integration**: Complete simulation comparison framework
+2. **Waveform Comparison**: Automatic signal comparison between SystemC and Verilator
+3. **Performance Benchmarking**: Translation speed and quality metrics
+4. **Regression Testing**: Continuous integration with quality tracking
+
+## Important Commands
+
+### Build Commands
+```bash
+# Clean rebuild
+rm -rf build && cmake -B build && cmake --build build -j$(nproc)
+
+# Build specific targets
+cmake --build build --target sv2sc                    # Just the translator
+cmake --build build --target counter_sv2sc_systemc_test # Specific SystemC test
+```
+
+### Testing Commands
+```bash
+# Run translation validation only
+ctest --test-dir build -R translation_test
+
+# Run SystemC simulations only  
+ctest --test-dir build -R systemc_simulation
+
+# Run failing tests with detailed output
+ctest --test-dir build --rerun-failed --output-on-failure
+```
+
+### Development Commands
+```bash
+# Test translation manually
+./build/sv2sc -top counter tests/examples/basic_counter/counter.sv -o build/manual_test
+
+# Run generated SystemC simulation
+cd build/tests/examples && ./counter_sv2sc_systemc_test
+```
