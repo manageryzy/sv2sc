@@ -4,6 +4,7 @@
 #include <vector>
 #include <unordered_map>
 #include <memory>
+#include <set>
 #include <sstream>
 
 namespace sv2sc::codegen {
@@ -41,6 +42,7 @@ struct Signal {
     bool isArray = false;
     std::vector<int> arrayDimensions;
     std::string initialValue;
+    bool preferArithmetic = false;  // Hint for arithmetic vs logic type selection
 };
 
 class SystemCCodeGenerator {
@@ -52,6 +54,7 @@ public:
     
     void addPort(const Port& port);
     void addSignal(const Signal& signal);
+    void updateSignalType(const std::string& signalName, bool preferArithmetic);
     
     void addBlockingAssignment(const std::string& lhs, const std::string& rhs);
     void addNonBlockingAssignment(const std::string& lhs, const std::string& rhs);
@@ -62,6 +65,10 @@ public:
     
     void addComment(const std::string& comment);
     void addRawCode(const std::string& code);
+    
+    void beginConditional(const std::string& condition);
+    void addElse();
+    void endConditional();
     
     std::string generateHeader() const;
     std::string generateImplementation() const;
@@ -77,12 +84,17 @@ private:
     std::stringstream processCode_;
     int indentLevel_ = 0;
     
+    // Module registry to prevent duplicate definitions
+    std::set<std::string> generatedModules_;
+    
     std::string getIndent() const;
     std::string mapDataType(SystemCDataType type, int width = 1) const;
     std::string generatePortDeclaration(const Port& port) const;
     std::string generateSignalDeclaration(const Signal& signal) const;
+    void regenerateSignalDeclarations();
     std::string generateConstructor() const;
     std::string generateProcessMethods() const;
+    bool isSkippingModule() const;
 };
 
 } // namespace sv2sc::codegen

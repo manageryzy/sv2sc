@@ -10,6 +10,7 @@
 #include <slang/ast/expressions/AssignmentExpressions.h>
 #include <slang/ast/Expression.h>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -41,11 +42,24 @@ private:
     std::string currentModule_;
     int indentLevel_ = 0;
     std::vector<std::string> portNames_;  // Track port names to avoid duplicate signals
+    std::set<std::string> declaredSignals_;  // Track all declared signals to prevent duplicates
+    bool currentBlockIsSequential_ = false;  // Track if current procedural block is sequential
+    
+    // Signal usage analysis for proper type mapping
+    std::set<std::string> arithmeticSignals_;  // Signals used in arithmetic operations
+    std::set<std::string> logicSignals_;       // Signals used in logic-only operations
 
     std::string getIndent() const;
     void increaseIndent();
     void decreaseIndent();
     std::string extractExpressionText(const slang::ast::Expression& expr) const;
+    bool isSignalName(const std::string& name) const;
+    
+    // Signal usage analysis methods
+    void analyzeExpressionUsage(const slang::ast::Expression& expr);
+    void markSignalArithmetic(const std::string& signalName);
+    void markSignalLogic(const std::string& signalName);
+    bool isArithmeticSignal(const std::string& signalName) const;
 };
 
 } // namespace sv2sc::core

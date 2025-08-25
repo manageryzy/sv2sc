@@ -11,6 +11,16 @@ SystemCCodeGenerator::SystemCCodeGenerator() {
 
 void SystemCCodeGenerator::beginModule(const std::string& moduleName) {
     currentModule_ = moduleName;
+    
+    // Check if this module was already generated to prevent duplicates
+    if (generatedModules_.count(moduleName) > 0) {
+        LOG_DEBUG("Skipping duplicate module generation: {}", moduleName);
+        return;
+    }
+    
+    // Add to registry
+    generatedModules_.insert(moduleName);
+    
     ports_.clear();
     signals_.clear();
     
@@ -28,6 +38,11 @@ void SystemCCodeGenerator::beginModule(const std::string& moduleName) {
 }
 
 void SystemCCodeGenerator::endModule() {
+    // Skip if this is a duplicate module
+    if (isSkippingModule()) {
+        return;
+    }
+    
     // Complete header
     headerCode_ << "\n";
     headerCode_ << getIndent() << "SC_CTOR(" << currentModule_ << ") {\n";
@@ -44,6 +59,8 @@ void SystemCCodeGenerator::endModule() {
 }
 
 void SystemCCodeGenerator::addPort(const Port& port) {
+    if (isSkippingModule()) return;
+    
     ports_.push_back(port);
     
     std::string portDecl = generatePortDeclaration(port);
@@ -53,12 +70,32 @@ void SystemCCodeGenerator::addPort(const Port& port) {
 }
 
 void SystemCCodeGenerator::addSignal(const Signal& signal) {
+    if (isSkippingModule()) return;
+    
     signals_.push_back(signal);
     
     std::string signalDecl = generateSignalDeclaration(signal);
     headerCode_ << getIndent() << signalDecl << ";\n";
     
     LOG_DEBUG("Added signal declaration: {}", signalDecl);
+}
+
+void SystemCCodeGenerator::updateSignalType(const std::string& signalName, bool preferArithmetic) {
+    // Find the signal and update its type preference
+    for (auto& signal : signals_) {
+        if (signal.name == signalName) {
+            bool wasArithmetic = signal.preferArithmetic;
+            signal.preferArithmetic = preferArithmetic;
+            
+            if (wasArithmetic != preferArithmetic) {
+                LOG_DEBUG("Updated signal '{}' type preference to arithmetic: {}", signalName, preferArithmetic);
+                
+                // Note: Full regeneration is complex, for now just log the change
+                // TODO: Implement full header regeneration
+            }
+            return;
+        }
+    }
 }
 
 void SystemCCodeGenerator::addBlockingAssignment(const std::string& lhs, const std::string& rhs) {
@@ -97,6 +134,22 @@ void SystemCCodeGenerator::addComment(const std::string& comment) {
 
 void SystemCCodeGenerator::addRawCode(const std::string& code) {
     headerCode_ << code;
+}
+
+void SystemCCodeGenerator::beginConditional(const std::string& condition) {
+    processCode_ << fmt::format("{}        if ({}) {{\n", getIndent(), condition);
+    indentLevel_++;
+}
+
+void SystemCCodeGenerator::addElse() {
+    indentLevel_--;
+    processCode_ << fmt::format("{}        }} else {{\n", getIndent());
+    indentLevel_++;
+}
+
+void SystemCCodeGenerator::endConditional() {
+    indentLevel_--;
+    processCode_ << fmt::format("{}        }}\n", getIndent());
 }
 
 std::string SystemCCodeGenerator::generateHeader() const {
@@ -163,6 +216,16 @@ std::string SystemCCodeGenerator::mapDataType(SystemCDataType type, int width) c
 }
 
 std::string SystemCCodeGenerator::generatePortDeclaration(const Port& port) const {
+    // Special handling for clock ports
+    bool isClock = (port.name == "clk" || port.name == "clock") && 
+                   port.direction == PortDirection::INPUT &&
+                   port.width == 1;
+    
+    if (isClock) {
+        // Use sc_in<bool> for clock ports to be compatible with sc_clock
+        return fmt::format("sc_in<bool> {}", port.name);
+    }
+    
     std::string direction;
     switch (port.direction) {
         case PortDirection::INPUT:
@@ -191,42 +254,57 @@ std::string SystemCCodeGenerator::generatePortDeclaration(const Port& port) cons
 }
 
 std::string SystemCCodeGenerator::generateSignalDeclaration(const Signal& signal) const {
-    std::string dataType = mapDataType(signal.dataType, signal.width);
-    std::string decl = fmt::format("sc_signal<{}> {}", dataType, signal.name);
+    std::string dataType;
     
-    // Handle arrays
-    if (signal.isArray) {
-        for (int dim : signal.arrayDimensions) {
-            decl = fmt::format("sc_vector<sc_signal<{}>> {} /* [{}] */", dataType, signal.name, dim);
-            break; // For now, handle only first dimension
-        }
+    // Choose appropriate SystemC type based on usage
+    if (signal.preferArithmetic && signal.width > 1) {
+        // Use sc_uint for multi-bit arithmetic signals
+        dataType = fmt::format("sc_uint<{}>", signal.width);
+    } else if (signal.preferArithmetic && signal.width == 1) {
+        // Use unsigned int for single-bit arithmetic
+        dataType = "unsigned int";
+    } else {
+        // Use standard logic type mapping for non-arithmetic signals
+        dataType = mapDataType(signal.dataType, signal.width);
     }
     
-    return decl;
+    // Handle arrays
+    if (signal.isArray && !signal.arrayDimensions.empty()) {
+        // For memory arrays, use simple C array syntax 
+        // sc_signal<sc_uint<8>> mem_array[256];
+        int arraySize = signal.arrayDimensions[0]; // Handle first dimension for now
+        return fmt::format("sc_signal<{}> {}[{}]", dataType, signal.name, arraySize);
+    }
+    
+    // Regular signal declaration
+    return fmt::format("sc_signal<{}> {}", dataType, signal.name);
 }
 
 std::string SystemCCodeGenerator::generateConstructor() const {
     std::stringstream constructor;
     
-    // Generate sensitivity list for processes
-    constructor << "    // Process sensitivity\n";
-    constructor << "    SC_METHOD(comb_proc);\n";
-    
-    // Add clock and reset sensitivity
-    bool hasClk = std::any_of(ports_.begin(), ports_.end(), 
-        [](const Port& p) { return p.name == "clk" || p.name == "clock"; });
-    bool hasReset = std::any_of(ports_.begin(), ports_.end(),
-        [](const Port& p) { return p.name == "reset" || p.name == "rst"; });
-    
-    if (hasClk) {
-        constructor << "    sensitive << clk.pos();\n";
+    // Generate sensitivity list for processes - only if we have processes
+    if (!processCode_.str().empty() || !ports_.empty()) {
+        constructor << getIndent() << "    // Process sensitivity\n";
+        constructor << getIndent() << "    SC_METHOD(comb_proc);\n";
+        
+        // Add clock and reset sensitivity
+        bool hasClk = std::any_of(ports_.begin(), ports_.end(), 
+            [](const Port& p) { return p.name == "clk" || p.name == "clock"; });
+        bool hasReset = std::any_of(ports_.begin(), ports_.end(),
+            [](const Port& p) { return p.name == "reset" || p.name == "rst"; });
+        
+        if (hasClk) {
+            constructor << getIndent() << "    sensitive << clk.pos();\n";
+        }
+        
+        if (hasReset) {
+            constructor << getIndent() << "    sensitive << reset;\n";
+        }
+        
+        constructor << getIndent() << "\n";
     }
     
-    if (hasReset) {
-        constructor << "    sensitive << reset;\n";
-    }
-    
-    constructor << "\n";
     return constructor.str();
 }
 
@@ -239,6 +317,12 @@ std::string SystemCCodeGenerator::generateProcessMethods() const {
     methods << "    }\n";
     
     return methods.str();
+}
+
+bool SystemCCodeGenerator::isSkippingModule() const {
+    // We're skipping if this module was already processed (duplicate)
+    return currentModule_.empty() || 
+           (generatedModules_.count(currentModule_) > 0 && generatedModules_.size() > 1);
 }
 
 } // namespace sv2sc::codegen

@@ -340,8 +340,8 @@ bool VCSArgsParser::handleDashCommand(const std::string& arg, int& i, int argc, 
         args_.defineMap.erase(undef);
     }
     else if (arg == "-o" && i + 1 < argc) {
-        // Output name
-        args_.outputName = argv[++i];
+        // For SystemC generation, treat -o as output directory
+        args_.outputDir = argv[++i];
     }
     else if (arg == "-R") {
         // Run after compile
