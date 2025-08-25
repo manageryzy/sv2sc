@@ -28,3 +28,4 @@ add_complete_sv2sc_test_suite(
 add_subdirectory(basic_counter)
 add_subdirectory(memory_array)
 add_subdirectory(generate_example)
+add_subdirectory(picorv32)

@@ -14,20 +14,49 @@ SVToSCVisitor::SVToSCVisitor(codegen::SystemCCodeGenerator& generator)
     : codeGen_(generator) {
 }
 
+void SVToSCVisitor::setTargetModule(const std::string& targetModule) {
+    targetModule_ = targetModule;
+}
+
 void SVToSCVisitor::handle(const slang::ast::InstanceSymbol& node) {
-    LOG_INFO("Processing module instance: {}", node.name);
+    // Module instances should track dependencies but not generate new modules
+    // The actual module definitions are handled by InstanceBodySymbol
+    LOG_DEBUG("Found module instance: {} of type {}", node.name, node.body.getDefinition().name);
     
-    currentModule_ = std::string(node.name);
+    // If we're currently processing a module, track this as a dependency
+    if (!currentModule_.empty()) {
+        std::string instancedModule = std::string(node.body.getDefinition().name);
+        codeGen_.addModuleInstance(std::string(node.name), instancedModule);
+        LOG_DEBUG("Added module instance {} of type {} to {}", node.name, instancedModule, currentModule_);
+    }
+    
+    // Don't visit the instance body here - we'll handle module definitions separately
+}
+
+void SVToSCVisitor::handle(const slang::ast::InstanceBodySymbol& node) {
+    std::string moduleName = std::string(node.getDefinition().name);
+    LOG_INFO("Processing module definition: {}", moduleName);
+    
+    // If we have a target module set, only process that specific module
+    if (!targetModule_.empty() && moduleName != targetModule_) {
+        LOG_DEBUG("Skipping module {} (not target module {})", moduleName, targetModule_);
+        return;
+    }
+    
+    currentModule_ = moduleName;
     portNames_.clear();         // Clear port names for new module
     declaredSignals_.clear();   // Clear signal tracking for new module
     arithmeticSignals_.clear(); // Clear arithmetic usage tracking
     logicSignals_.clear();      // Clear logic usage tracking
     codeGen_.beginModule(currentModule_);
     
+    LOG_DEBUG("Started processing module: {}", currentModule_);
+    
     // Visit all child symbols (ports, variables, etc.)
     // This will create signals and analyze their usage
     visitDefault(node);
     
+    LOG_DEBUG("Finishing module: {}", currentModule_);
     codeGen_.endModule();
     currentModule_.clear();
 }
@@ -204,11 +233,11 @@ void SVToSCVisitor::handle(const slang::ast::AssignmentExpression& node) {
     // TODO: Check actual assignment operator when API is clarified
     
     if (currentBlockIsSequential_) {
-        // In sequential blocks (always_ff), use non-blocking assignments
-        codeGen_.addNonBlockingAssignment(lhs, convertedRhs);
+        // In sequential blocks (always_ff), use sequential assignments
+        codeGen_.addSequentialAssignment(lhs, convertedRhs);
     } else {
-        // In combinational blocks (always_comb), use blocking assignments
-        codeGen_.addBlockingAssignment(lhs, convertedRhs);
+        // In combinational blocks (always_comb), use combinational assignments
+        codeGen_.addCombinationalAssignment(lhs, convertedRhs);
     }
 }
 
@@ -461,16 +490,55 @@ std::string SVToSCVisitor::extractExpressionText(const slang::ast::Expression& e
             std::string base = extractExpressionText(selectExpr.value());
             std::string index = extractExpressionText(selectExpr.selector());
             
+            // Handle bitwise complement operations in array indexing (e.g., regs[~waddr[4:0]])
+            if (index.find("~") != std::string::npos) {
+                // Check if this is a range selection after complement: ~signal.range(4, 0)
+                if (index.find(".range(") != std::string::npos) {
+                    // Convert ~signal.range(4, 0) to (~signal.read()).range(4, 0).to_uint()
+                    size_t rangePos = index.find(".range(");
+                    std::string signalPart = index.substr(1, rangePos - 1); // Remove ~ and get signal name
+                    std::string rangePart = index.substr(rangePos); // Get .range(4, 0) part
+                    return base + "[(~" + signalPart + ".read())" + rangePart + ".to_uint()]";
+                } else {
+                    // Simple complement: ~signal -> (~signal.read()).to_uint()
+                    std::string signalName = index.substr(1); // Remove ~
+                    return base + "[(~" + signalName + ".read()).to_uint()]";
+                }
+            }
+            
             // For array indexing in SystemC, check if index might be a signal/port that needs .read()
             // This is a heuristic: if the index name suggests it's a signal/port, add appropriate conversion
             if (index.find("address") != std::string::npos || 
-                index.find("index") != std::string::npos) {
+                index.find("index") != std::string::npos ||
+                index.find("addr") != std::string::npos) {
                 // Multi-bit signals need .read().to_uint()
-                return base + "[" + index + ".read().to_uint()]";
+                if (index.find(".range(") != std::string::npos) {
+                    // Already has range selection, just add .read() before range and .to_uint() after
+                    size_t rangePos = index.find(".range(");
+                    std::string signalPart = index.substr(0, rangePos);
+                    std::string rangePart = index.substr(rangePos);
+                    return base + "[" + signalPart + ".read()" + rangePart + ".to_uint()]";
+                } else {
+                    return base + "[" + index + ".read().to_uint()]";
+                }
             } else if (index == "i" || index == "j" || index == "k") {
                 // Single bit signals need .read() but to_bool() won't work for array indexing
                 // Use static_cast to convert to int (0 or 1)
                 return base + "[static_cast<int>(" + index + ".read())]";
+            }
+            
+            // Check if it's a signal name that needs .read() conversion
+            if (isSignalName(index) && index.find(".read()") == std::string::npos) {
+                if (index.find(".range(") != std::string::npos) {
+                    // Signal with range selection
+                    size_t rangePos = index.find(".range(");
+                    std::string signalPart = index.substr(0, rangePos);
+                    std::string rangePart = index.substr(rangePos);
+                    return base + "[" + signalPart + ".read()" + rangePart + ".to_uint()]";
+                } else {
+                    // Simple signal reference
+                    return base + "[" + index + ".read().to_uint()]";
+                }
             }
             
             return base + "[" + index + "]";

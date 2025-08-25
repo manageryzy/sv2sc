@@ -27,8 +27,12 @@ using SystemCCodeGenerator = codegen::SystemCCodeGenerator;
 class SVToSCVisitor : public slang::ast::ASTVisitor<SVToSCVisitor, true, true> {
 public:
     explicit SVToSCVisitor(SystemCCodeGenerator& generator);
+    
+    // Set target module to focus translation on specific module
+    void setTargetModule(const std::string& targetModule);
 
     void handle(const slang::ast::InstanceSymbol& node);
+    void handle(const slang::ast::InstanceBodySymbol& node);  // Module definitions
     void handle(const slang::ast::PortSymbol& node);
     void handle(const slang::ast::VariableSymbol& node);
     void handle(const slang::ast::VariableDeclStatement& node);
@@ -40,6 +44,7 @@ public:
 private:
     SystemCCodeGenerator& codeGen_;
     std::string currentModule_;
+    std::string targetModule_;  // Target module to translate (if set, only translate this module)
     int indentLevel_ = 0;
     std::vector<std::string> portNames_;  // Track port names to avoid duplicate signals
     std::set<std::string> declaredSignals_;  // Track all declared signals to prevent duplicates

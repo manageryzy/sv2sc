@@ -1,0 +1,632 @@
+---
+alwaysApply: true
+---
+
+# sv2sc Project Rules
+
+## Project Overview
+sv2sc is a SystemVerilog to SystemC translator built with modern C++20 and CMake, using the slang SystemVerilog frontend. This document defines the rules and standards for development.
+
+## Build System and Dependencies
+
+### CMake Requirements
+- **Minimum CMake Version**: 3.20
+- **C++ Standard**: C++20 (required)
+- **Build Types**: Debug (-g -O0 -Wall -Wextra) and Release (-O3 -DNDEBUG)
+- **Build Options**: 
+  - `BUILD_TESTS`: Unit and integration tests (default: OFF)
+  - `BUILD_EXAMPLES`: Example translations with automated testing (default: ON)
+
+### Dependencies (Auto-fetched via CMake)
+- **slang**: SystemVerilog frontend and parser
+- **fmt**: Modern C++ formatting library
+- **CLI11**: Command-line interface library
+- **spdlog**: Fast logging library
+- **Catch2**: Testing framework (when BUILD_TESTS=ON)
+- **SystemC**: SystemC simulation library (built from source)
+
+## Project Structure Rules
+
+### Directory Organization
+```
+sv2sc/
+├── src/                    # Source code implementation
+│   ├── core/              # AST visitor and core translation logic
+│   ├── translator/        # VCS argument parsing and input handling
+│   ├── codegen/          # SystemC code generation engine
+│   ├── utils/            # Logging and utility functions
+│   ├── main.cpp          # Application entry point
+│   └── sv2sc.cpp         # Main translator implementation
+├── include/              # Public headers (mirror src/ structure)
+├── tests/
+│   ├── unit/            # Unit tests for individual components
+│   ├── integration/     # End-to-end integration tests
+│   ├── examples/        # Example translations with automated testing
+│   └── data/           # Test data files
+├── cmake/               # CMake modules and utilities
+├── third-party/         # Git submodules for dependencies
+├── docs/               # Documentation
+├── build/              # Build artifacts and generated SystemC code
+└── output/             # User output directory
+```
+
+### Header Organization
+- All public headers must be in `include/` directory
+- Header structure should mirror source structure
+- Use include guards: `#ifndef SV2SC_MODULE_NAME_H` / `#define SV2SC_MODULE_NAME_H`
+- Include order: system headers, third-party headers, project headers
+
+## Coding Standards
+
+### C++ Standards
+- **Language**: C++20 with all modern features
+- **Memory Management**: Smart pointers, RAII, avoid raw pointers
+- **Error Handling**: Comprehensive exception safety
+- **Naming Conventions**:
+  - Functions and variables: `camelCase`
+  - Types and constants: `PascalCase`
+  - Clear, descriptive names required
+- **Code Formatting**:
+  - Column limit: 100 characters
+  - Indentation: 4 spaces (no tabs)
+  - Brace style: Custom with specific wrapping rules
+  - Pointer alignment: Left-aligned
+
+### Architecture Patterns
+- **Visitor Pattern**: For AST traversal with clean separation
+- **Builder Pattern**: For incremental SystemC code generation
+- **Strategy Pattern**: For different generation strategies
+- **PIMPL Idiom**: Hide implementation details in main translator class
+
+## Translation Rules
+
+### SystemVerilog to SystemC Type Mapping
+| SystemVerilog | SystemC | Notes |
+|---------------|---------|-------|
+| `logic` | `sc_logic` | 4-state logic |
+| `bit` | `sc_bit` | 2-state logic |
+| `logic [N:0]` | `sc_lv<N+1>` | N+1 bit vector |
+| `bit [N:0]` | `sc_bv<N+1>` | N+1 bit vector |
+| `int` | `sc_int<32>` | 32-bit signed |
+| `integer` | `sc_int<32>` | 32-bit signed |
+| `reg [N:0]` | `sc_lv<N+1>` | Legacy type |
+| `wire [N:0]` | `sc_signal<sc_lv<N+1>>` | Wire type |
+| `input` | `sc_in<>` | Input port |
+| `output` | `sc_out<>` | Output port |
+| `inout` | `sc_inout<>` | Bidirectional port |
+| `<=` (non-blocking) | `signal.write()` | SystemC signal writes |
+| `=` (blocking) | Direct assignment | C++ assignment |
+| `always_ff` | `SC_METHOD` | Clock sensitivity |
+| `always_comb` | `SC_METHOD` | Signal sensitivity |
+
+### Supported SystemVerilog Features
+**✅ Fully Supported:**
+- Module declarations with parameters
+- Port declarations (input, output, inout)
+- Data types: logic, bit, reg, wire
+- Vector types with bit ranges
+- Always blocks: always_ff, always_comb, always@
+- Assignments: blocking (=) and non-blocking (<=)
+- Generate blocks with genvar loops
+- Arrays: 1D and multi-dimensional
+- Delays: #delay statements
+- Continuous assignments: assign statements
+
+**⚠️ Partial Support:**
+- Functions and tasks: Simple functions supported
+- Interfaces: Basic interface translation
+- Packages: Import statements processed
+- Assertions: Converted to comments
+- Generate blocks: Basic support, complex nesting may cause issues
+
+**❌ Not Yet Supported:**
+- Classes and objects: OOP constructs
+- SystemVerilog unions: Union types
+- Randomization: rand/randc
+- Coverage: Functional coverage
+- DPI-C: Foreign function interface
+
+## Command Line Interface Rules
+
+### VCS-Compatible Arguments
+- **Include directories**: `-I` or `+incdir+`
+- **Preprocessor defines**: `-D` or `+define+`
+- **Library paths**: `-y`
+- **Timescale**: `-timescale`
+- **Top module**: `-top` (required)
+- **Output directory**: `-o`
+
+### SystemC-Specific Options
+- **Testbench generation**: `--testbench`
+- **Clock signal**: `--clock`
+- **Reset signal**: `--reset`
+- **Synthesis mode**: `--synthesis`
+- **Debug mode**: `--debug`
+- **Verbose output**: `--verbose`
+
+## Testing Framework Rules
+
+### Test Organization
+- **Unit Tests**: Test individual components in isolation
+- **Integration Tests**: End-to-end translation testing
+- **Translation Validation**: Automated quality scoring and validation
+- **SystemC Simulation**: Testbench generation and simulation verification
+
+### Test Quality Metrics
+- **Port Count Validation**: Verify expected number of ports translated
+- **Unknown Expression Detection**: Count untranslated complex expressions
+- **Skipped Assignment Detection**: Identify assignments that couldn't be translated
+- **Quality Scoring**: EXCELLENT/GOOD/FAIR/NEEDS_WORK
+
+### Test Execution Commands
+```bash
+# Run all tests
+ctest --test-dir build
+
+# Run specific test categories
+ctest --test-dir build -R unit
+ctest --test-dir build -R integration
+ctest --test-dir build -R translation_test
+ctest --test-dir build -R systemc_simulation
+
+# Verbose output
+ctest --test-dir build --verbose
+```
+
+## Development Workflow Rules
+
+### Build Commands
+```bash
+# Quick start
+cmake -B build
+cmake --build build -j$(nproc)
+
+# Debug build
+cmake -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j$(nproc)
+
+# Clean rebuild
+rm -rf build && cmake -B build && cmake --build build -j$(nproc)
+```
+
+### Testing Commands
+```bash
+# Basic translation test
+./build/sv2sc -top counter tests/examples/basic_counter/counter.sv
+
+# With VCS-style arguments
+./build/sv2sc -I ./include +incdir+./rtl -D WIDTH=8 +define+SYNTHESIS -top dut design.sv
+
+# Manual SystemC simulation
+cd build/tests/examples && ./counter_sv2sc_systemc_test
+```
+
+### Code Quality Requirements
+- Follow existing C++ code style (enforced by pre-commit hooks)
+- Use modern C++20 features and idioms
+- Write unit tests for new functionality
+- Document public APIs with Doxygen comments
+- Maintain high test coverage
+- Add translation validation tests for new SystemVerilog features
+
+## Error Handling and Debugging Rules
+
+### Common Error Categories
+- **File Not Found**: Check file path and spelling
+- **Parse Errors**: Fix SystemVerilog syntax errors
+- **Unsupported Constructs**: Use supported SystemVerilog subset
+
+### Debug Options
+- **Debug logging**: `--debug` flag
+- **Verbose output**: `--verbose` flag
+- **Log file location**: `build/tests/examples/tests/*/sv2sc.log`
+
+### Translation Quality Analysis
+- View detailed translation validation results
+- Check generated SystemC files in build directory
+- Analyze quality metrics and scoring
+
+## Extensibility Rules
+
+### Adding New Features
+- Use visitor pattern for new AST nodes
+- Extend code generator incrementally
+- Update type mapping tables
+- Maintain backward compatibility
+- Add appropriate test coverage
+
+### Plugin System Guidelines
+- Design for extensible translation rules
+- Support configuration file customization
+- Enable incremental compilation for large projects
+- Consider parallel processing for multi-file translation
+
+## Documentation Rules
+
+### Code Documentation
+- Use Doxygen comments for public APIs
+- Document complex algorithms and design decisions
+- Maintain up-to-date README.md and CLAUDE.md
+- Include usage examples and command-line help
+
+### Testing Documentation
+- Document test cases and expected outcomes
+- Maintain test quality metrics and scoring
+- Update test results and status regularly
+
+## Performance and Optimization Rules
+
+### Build Performance
+- Use parallel builds with `-j$(nproc)`
+- Enable ccache for faster rebuilds
+- Optimize dependency management
+
+### Translation Performance
+- Profile translation speed for large files
+- Optimize AST traversal algorithms
+- Consider incremental compilation for large projects
+
+## Security and Safety Rules
+
+### Input Validation
+- Validate all command-line arguments
+- Sanitize file paths and names
+- Handle malformed SystemVerilog gracefully
+
+### Error Recovery
+- Provide meaningful error messages
+- Graceful degradation for unsupported features
+- Maintain system stability during translation failures
+
+## Future Enhancement Guidelines
+
+### Planned Features Priority
+1. SystemVerilog Interfaces: Interface and modport support
+2. Classes and Objects: OOP construct translation
+3. Assertions: SVA to SystemC assertion mapping
+4. Coverage: Functional coverage translation
+5. DPI Functions: SystemVerilog DPI integration
+6. Improved Generate Block Support: Better handling of complex generate constructs
+
+### Architecture Improvements
+1. Plugin System: Extensible translation rules
+2. Configuration Files: Translation behavior customization
+3. Incremental Compilation: Large project support
+4. Parallel Processing: Multi-file concurrent translation
+5. Enhanced Error Reporting: Better diagnostic messages
+
+## Contributing Guidelines
+
+### Development Workflow
+1. Fork the repository
+2. Create feature branch
+3. Add tests for new features
+4. Ensure all tests pass
+5. Submit pull request
+
+### Code Review Requirements
+- Follow existing code style and patterns
+- Include appropriate test coverage
+- Update documentation as needed
+- Verify translation quality for new SystemVerilog features
+
+### Release Process
+- Maintain semantic versioning
+- Update CHANGELOG.md
+- Tag releases appropriately
+- Ensure all tests pass before release
+
+# sv2sc Project Rules
+
+## Project Overview
+sv2sc is a SystemVerilog to SystemC translator built with modern C++20 and CMake, using the slang SystemVerilog frontend. This document defines the rules and standards for development.
+
+## Build System and Dependencies
+
+### CMake Requirements
+- **Minimum CMake Version**: 3.20
+- **C++ Standard**: C++20 (required)
+- **Build Types**: Debug (-g -O0 -Wall -Wextra) and Release (-O3 -DNDEBUG)
+- **Build Options**: 
+  - `BUILD_TESTS`: Unit and integration tests (default: OFF)
+  - `BUILD_EXAMPLES`: Example translations with automated testing (default: ON)
+
+### Dependencies (Auto-fetched via CMake)
+- **slang**: SystemVerilog frontend and parser
+- **fmt**: Modern C++ formatting library
+- **CLI11**: Command-line interface library
+- **spdlog**: Fast logging library
+- **Catch2**: Testing framework (when BUILD_TESTS=ON)
+- **SystemC**: SystemC simulation library (built from source)
+
+## Project Structure Rules
+
+### Directory Organization
+```
+sv2sc/
+├── src/                    # Source code implementation
+│   ├── core/              # AST visitor and core translation logic
+│   ├── translator/        # VCS argument parsing and input handling
+│   ├── codegen/          # SystemC code generation engine
+│   ├── utils/            # Logging and utility functions
+│   ├── main.cpp          # Application entry point
+│   └── sv2sc.cpp         # Main translator implementation
+├── include/              # Public headers (mirror src/ structure)
+├── tests/
+│   ├── unit/            # Unit tests for individual components
+│   ├── integration/     # End-to-end integration tests
+│   ├── examples/        # Example translations with automated testing
+│   └── data/           # Test data files
+├── cmake/               # CMake modules and utilities
+├── third-party/         # Git submodules for dependencies
+├── docs/               # Documentation
+├── build/              # Build artifacts and generated SystemC code
+└── output/             # User output directory
+```
+
+### Header Organization
+- All public headers must be in `include/` directory
+- Header structure should mirror source structure
+- Use include guards: `#ifndef SV2SC_MODULE_NAME_H` / `#define SV2SC_MODULE_NAME_H`
+- Include order: system headers, third-party headers, project headers
+
+## Coding Standards
+
+### C++ Standards
+- **Language**: C++20 with all modern features
+- **Memory Management**: Smart pointers, RAII, avoid raw pointers
+- **Error Handling**: Comprehensive exception safety
+- **Naming Conventions**:
+  - Functions and variables: `camelCase`
+  - Types and constants: `PascalCase`
+  - Clear, descriptive names required
+- **Code Formatting**:
+  - Column limit: 100 characters
+  - Indentation: 4 spaces (no tabs)
+  - Brace style: Custom with specific wrapping rules
+  - Pointer alignment: Left-aligned
+
+### Architecture Patterns
+- **Visitor Pattern**: For AST traversal with clean separation
+- **Builder Pattern**: For incremental SystemC code generation
+- **Strategy Pattern**: For different generation strategies
+- **PIMPL Idiom**: Hide implementation details in main translator class
+
+## Translation Rules
+
+### SystemVerilog to SystemC Type Mapping
+| SystemVerilog | SystemC | Notes |
+|---------------|---------|-------|
+| `logic` | `sc_logic` | 4-state logic |
+| `bit` | `sc_bit` | 2-state logic |
+| `logic [N:0]` | `sc_lv<N+1>` | N+1 bit vector |
+| `bit [N:0]` | `sc_bv<N+1>` | N+1 bit vector |
+| `int` | `sc_int<32>` | 32-bit signed |
+| `integer` | `sc_int<32>` | 32-bit signed |
+| `reg [N:0]` | `sc_lv<N+1>` | Legacy type |
+| `wire [N:0]` | `sc_signal<sc_lv<N+1>>` | Wire type |
+| `input` | `sc_in<>` | Input port |
+| `output` | `sc_out<>` | Output port |
+| `inout` | `sc_inout<>` | Bidirectional port |
+| `<=` (non-blocking) | `signal.write()` | SystemC signal writes |
+| `=` (blocking) | Direct assignment | C++ assignment |
+| `always_ff` | `SC_METHOD` | Clock sensitivity |
+| `always_comb` | `SC_METHOD` | Signal sensitivity |
+
+### Supported SystemVerilog Features
+**✅ Fully Supported:**
+- Module declarations with parameters
+- Port declarations (input, output, inout)
+- Data types: logic, bit, reg, wire
+- Vector types with bit ranges
+- Always blocks: always_ff, always_comb, always@
+- Assignments: blocking (=) and non-blocking (<=)
+- Generate blocks with genvar loops
+- Arrays: 1D and multi-dimensional
+- Delays: #delay statements
+- Continuous assignments: assign statements
+
+**⚠️ Partial Support:**
+- Functions and tasks: Simple functions supported
+- Interfaces: Basic interface translation
+- Packages: Import statements processed
+- Assertions: Converted to comments
+- Generate blocks: Basic support, complex nesting may cause issues
+
+**❌ Not Yet Supported:**
+- Classes and objects: OOP constructs
+- SystemVerilog unions: Union types
+- Randomization: rand/randc
+- Coverage: Functional coverage
+- DPI-C: Foreign function interface
+
+## Command Line Interface Rules
+
+### VCS-Compatible Arguments
+- **Include directories**: `-I` or `+incdir+`
+- **Preprocessor defines**: `-D` or `+define+`
+- **Library paths**: `-y`
+- **Timescale**: `-timescale`
+- **Top module**: `-top` (required)
+- **Output directory**: `-o`
+
+### SystemC-Specific Options
+- **Testbench generation**: `--testbench`
+- **Clock signal**: `--clock`
+- **Reset signal**: `--reset`
+- **Synthesis mode**: `--synthesis`
+- **Debug mode**: `--debug`
+- **Verbose output**: `--verbose`
+
+## Testing Framework Rules
+
+### Test Organization
+- **Unit Tests**: Test individual components in isolation
+- **Integration Tests**: End-to-end translation testing
+- **Translation Validation**: Automated quality scoring and validation
+- **SystemC Simulation**: Testbench generation and simulation verification
+
+### Test Quality Metrics
+- **Port Count Validation**: Verify expected number of ports translated
+- **Unknown Expression Detection**: Count untranslated complex expressions
+- **Skipped Assignment Detection**: Identify assignments that couldn't be translated
+- **Quality Scoring**: EXCELLENT/GOOD/FAIR/NEEDS_WORK
+
+### Test Execution Commands
+```bash
+# Run all tests
+ctest --test-dir build
+
+# Run specific test categories
+ctest --test-dir build -R unit
+ctest --test-dir build -R integration
+ctest --test-dir build -R translation_test
+ctest --test-dir build -R systemc_simulation
+
+# Verbose output
+ctest --test-dir build --verbose
+```
+
+## Development Workflow Rules
+
+### Build Commands
+```bash
+# Quick start
+cmake -B build
+cmake --build build -j$(nproc)
+
+# Debug build
+cmake -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j$(nproc)
+
+# Clean rebuild
+rm -rf build && cmake -B build && cmake --build build -j$(nproc)
+```
+
+### Testing Commands
+```bash
+# Basic translation test
+./build/sv2sc -top counter tests/examples/basic_counter/counter.sv
+
+# With VCS-style arguments
+./build/sv2sc -I ./include +incdir+./rtl -D WIDTH=8 +define+SYNTHESIS -top dut design.sv
+
+# Manual SystemC simulation
+cd build/tests/examples && ./counter_sv2sc_systemc_test
+```
+
+### Code Quality Requirements
+- Follow existing C++ code style (enforced by pre-commit hooks)
+- Use modern C++20 features and idioms
+- Write unit tests for new functionality
+- Document public APIs with Doxygen comments
+- Maintain high test coverage
+- Add translation validation tests for new SystemVerilog features
+
+## Error Handling and Debugging Rules
+
+### Common Error Categories
+- **File Not Found**: Check file path and spelling
+- **Parse Errors**: Fix SystemVerilog syntax errors
+- **Unsupported Constructs**: Use supported SystemVerilog subset
+
+### Debug Options
+- **Debug logging**: `--debug` flag
+- **Verbose output**: `--verbose` flag
+- **Log file location**: `build/tests/examples/tests/*/sv2sc.log`
+
+### Translation Quality Analysis
+- View detailed translation validation results
+- Check generated SystemC files in build directory
+- Analyze quality metrics and scoring
+
+## Extensibility Rules
+
+### Adding New Features
+- Use visitor pattern for new AST nodes
+- Extend code generator incrementally
+- Update type mapping tables
+- Maintain backward compatibility
+- Add appropriate test coverage
+
+### Plugin System Guidelines
+- Design for extensible translation rules
+- Support configuration file customization
+- Enable incremental compilation for large projects
+- Consider parallel processing for multi-file translation
+
+## Documentation Rules
+
+### Code Documentation
+- Use Doxygen comments for public APIs
+- Document complex algorithms and design decisions
+- Maintain up-to-date README.md and CLAUDE.md
+- Include usage examples and command-line help
+
+### Testing Documentation
+- Document test cases and expected outcomes
+- Maintain test quality metrics and scoring
+- Update test results and status regularly
+
+## Performance and Optimization Rules
+
+### Build Performance
+- Use parallel builds with `-j$(nproc)`
+- Enable ccache for faster rebuilds
+- Optimize dependency management
+
+### Translation Performance
+- Profile translation speed for large files
+- Optimize AST traversal algorithms
+- Consider incremental compilation for large projects
+
+## Security and Safety Rules
+
+### Input Validation
+- Validate all command-line arguments
+- Sanitize file paths and names
+- Handle malformed SystemVerilog gracefully
+
+### Error Recovery
+- Provide meaningful error messages
+- Graceful degradation for unsupported features
+- Maintain system stability during translation failures
+
+## Future Enhancement Guidelines
+
+### Planned Features Priority
+1. SystemVerilog Interfaces: Interface and modport support
+2. Classes and Objects: OOP construct translation
+3. Assertions: SVA to SystemC assertion mapping
+4. Coverage: Functional coverage translation
+5. DPI Functions: SystemVerilog DPI integration
+6. Improved Generate Block Support: Better handling of complex generate constructs
+
+### Architecture Improvements
+1. Plugin System: Extensible translation rules
+2. Configuration Files: Translation behavior customization
+3. Incremental Compilation: Large project support
+4. Parallel Processing: Multi-file concurrent translation
+5. Enhanced Error Reporting: Better diagnostic messages
+
+## Contributing Guidelines
+
+### Development Workflow
+1. Fork the repository
+2. Create feature branch
+3. Add tests for new features
+4. Ensure all tests pass
+5. Submit pull request
+
+### Code Review Requirements
+- Follow existing code style and patterns
+- Include appropriate test coverage
+- Update documentation as needed
+- Verify translation quality for new SystemVerilog features
+
+### Release Process
+- Maintain semantic versioning
+- Update CHANGELOG.md
+- Tag releases appropriately
+- Ensure all tests pass before release
+

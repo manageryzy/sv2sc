@@ -5,10 +5,13 @@
 #include <slang/syntax/SyntaxTree.h>
 #include <slang/text/SourceManager.h>
 #include <slang/ast/Compilation.h>
+#include <slang/ast/symbols/CompilationUnitSymbols.h>
 #include <slang/util/Bag.h>
 #include <slang/parsing/Preprocessor.h>
 #include <filesystem>
+#include <functional>
 #include <fstream>
+#include <set>
 
 namespace sv2sc {
 
@@ -22,13 +25,8 @@ public:
         try {
             LOG_INFO("Starting SystemVerilog to SystemC translation");
             
-            if (options_.inputFiles.size() == 1) {
-                // Single file processing
-                return processFile(options_.inputFiles[0]);
-            } else {
-                // Multi-file design-level compilation
-                return processDesign();
-            }
+            // Always use multi-module design-level compilation for better module handling
+            return processDesign();
             
         } catch (const std::exception& e) {
             LOG_ERROR("Translation failed with exception: {}", e.what());
@@ -78,9 +76,19 @@ public:
                 compilation.addSyntaxTree(syntaxTree);
             }
             
-            // Elaborate the design
-            if (!options_.topModule.empty()) {
-                LOG_INFO("Elaborating top module: {}", options_.topModule);
+            // Elaborate the design - force elaboration of all definitions
+            LOG_INFO("Elaborating all definitions in the design");
+            
+            // Get all definitions and try to elaborate each one
+            auto allDefs = compilation.getDefinitions();
+            for (const auto* symbol : allDefs) {
+                if (symbol->kind == slang::ast::SymbolKind::Definition) {
+                    auto& def = symbol->as<slang::ast::DefinitionSymbol>();
+                    if (def.definitionKind == slang::ast::DefinitionKind::Module) {
+                        LOG_DEBUG("Attempting to elaborate definition: {}", def.name);
+                        // This should create instances that we can find later
+                    }
+                }
             }
             
             // Process the compilation
@@ -101,36 +109,155 @@ public:
             codegen::SystemCCodeGenerator generator;
             configureSystemCGenerator(generator);
             
-            // Create visitor for AST traversal
-            core::SVToSCVisitor visitor(generator);
-            
-            // Get compilation root and process
+            // Get compilation root
             auto& root = compilation.getRoot();
             
-            // If top module is specified, find and process only that hierarchy
-            if (!options_.topModule.empty()) {
-                bool foundTopModule = false;
-                
-                // Search for the top module in the design
-                for (auto& instance : root.topInstances) {
-                    LOG_DEBUG("Found top-level instance: {}", instance->name);
+            // Find all module definitions in the compilation using getDefinitions()
+            std::vector<const slang::ast::InstanceBodySymbol*> moduleDefinitions;
+            std::set<std::string> moduleNames; // Track unique module names to avoid duplicates
+            
+            // First approach: Find instantiated modules (these are properly elaborated)
+            LOG_INFO("Searching for instantiated modules");
+            std::function<void(const slang::ast::Symbol&)> findInstancedModules = [&](const slang::ast::Symbol& symbol) {
+                if (symbol.kind == slang::ast::SymbolKind::Instance) {
+                    auto& inst = symbol.as<slang::ast::InstanceSymbol>();
+                    std::string moduleName = std::string(inst.body.getDefinition().name);
                     
-                    if (instance->name == options_.topModule) {
-                        LOG_INFO("Processing top module: {}", options_.topModule);
-                        visitor.visit(*instance);
-                        foundTopModule = true;
+                    // Skip if we've already processed this module
+                    if (moduleNames.find(moduleName) == moduleNames.end()) {
+                        LOG_DEBUG("Found module definition from instance: {}", moduleName);
+                        moduleNames.insert(moduleName);
+                        moduleDefinitions.push_back(&inst.body);
+                    }
+                }
+                
+                // Recursively search child symbols if this symbol is a scope
+                if (symbol.isScope()) {
+                    auto& scope = symbol.as<slang::ast::Scope>();
+                    for (auto& child : scope.members()) {
+                        findInstancedModules(child);
+                    }
+                }
+            };
+            findInstancedModules(root);
+            
+            // Second approach: Create individual elaborations for missing modules
+            LOG_INFO("Getting all module definitions to check for missing modules");
+            auto allDefinitions = compilation.getDefinitions();
+            std::vector<std::string> missingModules;
+            
+            for (const auto* symbol : allDefinitions) {
+                if (symbol->kind == slang::ast::SymbolKind::Definition) {
+                    auto& def = symbol->as<slang::ast::DefinitionSymbol>();
+                    if (def.definitionKind == slang::ast::DefinitionKind::Module) {
+                        std::string moduleName = std::string(def.name);
                         
-                        // Generate output files for top module
-                        std::string headerPath = options_.outputDir + "/" + options_.topModule + ".h";
-                        std::string implPath = options_.outputDir + "/" + options_.topModule + ".cpp";
-                        
-                        if (!generator.writeToFile(headerPath, implPath)) {
-                            std::string error = fmt::format("Failed to write output files for top module: {}", options_.topModule);
-                            LOG_ERROR(error);
-                            errors_.push_back(error);
-                            return false;
+                        // Check if this module is missing from our instances
+                        if (moduleNames.find(moduleName) == moduleNames.end()) {
+                            missingModules.push_back(moduleName);
+                            LOG_DEBUG("Module {} needs individual elaboration", moduleName);
+                        }
+                    }
+                }
+            }
+            
+            // For each missing module, create a separate compilation with it as top module
+            LOG_INFO("Creating individual elaborations for {} missing modules", missingModules.size());
+            std::vector<std::unique_ptr<slang::ast::Compilation>> tempCompilations; // Keep alive
+            
+            for (const auto& moduleName : missingModules) {
+                LOG_DEBUG("Creating individual elaboration for: {}", moduleName);
+                
+                try {
+                    // Create compilation options with this module as top
+                    slang::ast::CompilationOptions compOpts;
+                    compOpts.topModules.insert(moduleName);
+                    
+                    // Create option bag with compilation options
+                    slang::Bag optionBag;
+                    optionBag.set(compOpts);
+                    
+                    // Add preprocessor options to maintain consistency
+                    slang::parsing::PreprocessorOptions preprocessorOpts;
+                    for (const auto& [name, value] : options_.defineMap) {
+                        std::string defineStr = name + "=" + value;
+                        preprocessorOpts.predefines.emplace_back(defineStr);
+                    }
+                    for (const auto& includePath : options_.includePaths) {
+                        preprocessorOpts.additionalIncludePaths.emplace_back(includePath);
+                    }
+                    optionBag.set(preprocessorOpts);
+                    
+                    // Create temporary compilation with its own SourceManager
+                    auto tempComp = std::make_unique<slang::ast::Compilation>(optionBag);
+                    
+                    // Add all source files to the temporary compilation using fromFile directly
+                    for (const auto& inputFile : options_.inputFiles) {
+                        // Use fromFile to let slang manage file paths properly 
+                        auto syntaxTreeResult = slang::syntax::SyntaxTree::fromFile(std::string_view(inputFile));
+                        if (syntaxTreeResult.has_value()) {
+                            auto syntaxTree = syntaxTreeResult.value();
+                            if (syntaxTree->diagnostics().empty()) {
+                                tempComp->addSyntaxTree(syntaxTree);
+                            } else {
+                                LOG_WARN("Parse errors in {} for temp compilation {}, but continuing", inputFile, moduleName);
+                                tempComp->addSyntaxTree(syntaxTree);  // Add anyway, may still work
+                            }
+                        } else {
+                            LOG_WARN("Failed to load {} for temp compilation {}", inputFile, moduleName);
+                        }
+                    }
+                    
+                    // Force elaboration by calling getRoot()
+                    auto& tempRoot = tempComp->getRoot();
+                    
+                    // Search for the elaborated module in the temporary compilation
+                    std::function<void(const slang::ast::Symbol&)> findElaboratedModule = [&](const slang::ast::Symbol& symbol) {
+                        if (symbol.kind == slang::ast::SymbolKind::Instance) {
+                            auto& inst = symbol.as<slang::ast::InstanceSymbol>();
+                            std::string instModuleName = std::string(inst.body.getDefinition().name);
+                            
+                            if (instModuleName == moduleName && 
+                                moduleNames.find(instModuleName) == moduleNames.end()) {
+                                LOG_DEBUG("Found elaborated module: {}", instModuleName);
+                                moduleNames.insert(instModuleName);
+                                moduleDefinitions.push_back(&inst.body);
+                            }
                         }
                         
+                        if (symbol.isScope()) {
+                            auto& scope = symbol.as<slang::ast::Scope>();
+                            for (auto& child : scope.members()) {
+                                findElaboratedModule(child);
+                            }
+                        }
+                    };
+                    findElaboratedModule(tempRoot);
+                    
+                    // Keep the compilation alive to prevent pointer invalidation
+                    tempCompilations.push_back(std::move(tempComp));
+                    
+                } catch (const std::exception& e) {
+                    LOG_ERROR("Failed to elaborate module {}: {}", moduleName, e.what());
+                    // Continue with other modules
+                }
+            }
+            
+            if (moduleDefinitions.empty()) {
+                std::string error = "No module definitions found in design";
+                LOG_ERROR(error);
+                errors_.push_back(error);
+                return false;
+            }
+            
+            LOG_INFO("Found {} module definitions", moduleDefinitions.size());
+            
+            // Check if specified top module exists
+            bool foundTopModule = options_.topModule.empty();
+            if (!options_.topModule.empty()) {
+                for (auto* moduleDef : moduleDefinitions) {
+                    if (std::string(moduleDef->getDefinition().name) == options_.topModule) {
+                        foundTopModule = true;
                         break;
                     }
                 }
@@ -141,25 +268,35 @@ public:
                     errors_.push_back(error);
                     return false;
                 }
-            } else {
-                // Process all top-level modules
-                LOG_INFO("Processing all top-level modules");
+            }
+            
+            // Process each module definition separately
+            core::SVToSCVisitor visitor(generator);
+            int modulesProcessed = 0;
+            
+            for (auto* moduleDef : moduleDefinitions) {
+                std::string moduleName = std::string(moduleDef->getDefinition().name);
+                LOG_INFO("Processing module: {}", moduleName);
                 
-                for (auto& instance : root.topInstances) {
-                    LOG_INFO("Processing module: {}", instance->name);
-                    visitor.visit(*instance);
-                    
-                    // Generate output files for each module
-                    std::string headerPath = options_.outputDir + "/" + std::string(instance->name) + ".h";
-                    std::string implPath = options_.outputDir + "/" + std::string(instance->name) + ".cpp";
-                    
-                    if (!generator.writeToFile(headerPath, implPath)) {
-                        std::string error = fmt::format("Failed to write output files for module: {}", instance->name);
-                        LOG_ERROR(error);
-                        errors_.push_back(error);
-                        return false;
-                    }
-                }
+                // Visit the module definition directly instead of the entire root
+                visitor.visit(*moduleDef);
+                
+                modulesProcessed++;
+            }
+            
+            LOG_INFO("Processed {} module definitions", modulesProcessed);
+            
+            // Write all generated modules to separate files
+            if (!generator.writeAllModuleFiles(options_.outputDir)) {
+                std::string error = "Failed to write module files";
+                LOG_ERROR(error);
+                errors_.push_back(error);
+                return false;
+            }
+            
+            // Generate main header file including all modules
+            if (!generator.generateMainHeader(options_.outputDir)) {
+                LOG_WARN("Failed to generate main header file, but continuing...");
             }
             
             // Generate testbench if requested
