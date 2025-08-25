@@ -17,7 +17,7 @@ add_sv2sc_test(
     TOP_MODULE picorv32
     SV_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/../../../third-party/picorv32/picorv32.v
     TRANSLATOR_ARGS -D ENABLE_COUNTERS=0 -D ENABLE_REGS_16_31=0 -D ENABLE_PCPI=0 -D ENABLE_IRQ=0 -D ENABLE_TRACE=0
-    EXPECTED_PORTS 8  # Minimal configuration ports
+    EXPECTED_PORTS 27  # Ports with current defines configuration
 )
 
 # Note: PicoRV32 is a complex processor core with:

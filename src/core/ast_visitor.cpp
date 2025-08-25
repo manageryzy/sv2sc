@@ -7,6 +7,8 @@
 #include <slang/ast/expressions/OperatorExpressions.h>
 #include <slang/ast/expressions/SelectExpressions.h>
 #include <slang/ast/types/AllTypes.h>
+#include <algorithm>
+#include <string>
 
 namespace sv2sc::core {
 
@@ -399,10 +401,32 @@ std::string SVToSCVisitor::extractExpressionText(const slang::ast::Expression& e
                     std::string value = operand.substr(pos + 2);
                     
                     if (base == 'd') {
-                        // Decimal value - just return the number
+                        // Decimal value - handle X/Z states
+                        if (value == "x" || value == "X") {
+                            // Extract width from the beginning of operand (e.g., "32" from "32'dx")
+                            std::string widthStr = operand.substr(0, pos);
+                            int width = std::stoi(widthStr);
+                            return fmt::format("sc_lv<{}>(\"{}\")", width, std::string(width, 'X'));
+                        } else if (value == "z" || value == "Z") {
+                            // Extract width from the beginning of operand
+                            std::string widthStr = operand.substr(0, pos);
+                            int width = std::stoi(widthStr);
+                            return fmt::format("sc_lv<{}>(\"{}\")", width, std::string(width, 'Z'));
+                        }
                         return value;
                     } else if (base == 'b') {
-                        // Binary value - convert to decimal or keep as 0x format
+                        // Binary value - convert to decimal or keep as 0x format, handle X/Z
+                        if (value.find('x') != std::string::npos || value.find('X') != std::string::npos ||
+                            value.find('z') != std::string::npos || value.find('Z') != std::string::npos) {
+                            // Extract width from the beginning of operand
+                            std::string widthStr = operand.substr(0, pos);
+                            int width = std::stoi(widthStr);
+                            // Convert x/z to X/Z for SystemC
+                            std::string scValue = value;
+                            std::replace(scValue.begin(), scValue.end(), 'x', 'X');
+                            std::replace(scValue.begin(), scValue.end(), 'z', 'Z');
+                            return fmt::format("sc_lv<{}>(\"{}\")", width, scValue);
+                        }
                         if (value == "0" || value == "00000000") {
                             return "0";
                         } else if (value == "1" || value == "00000001") {
@@ -410,10 +434,63 @@ std::string SVToSCVisitor::extractExpressionText(const slang::ast::Expression& e
                         }
                         return "0b" + value; // C++14 binary literal
                     } else if (base == 'h') {
-                        // Hex value
+                        // Hex value - handle X/Z states
+                        if (value.find('x') != std::string::npos || value.find('X') != std::string::npos ||
+                            value.find('z') != std::string::npos || value.find('Z') != std::string::npos) {
+                            // Extract width from the beginning of operand
+                            std::string widthStr = operand.substr(0, pos);
+                            int width = std::stoi(widthStr);
+                            // Convert hex with x/z to binary X/Z pattern
+                            std::string binaryPattern = "";
+                            for (char c : value) {
+                                if (c == 'x' || c == 'X') {
+                                    binaryPattern += "XXXX";
+                                } else if (c == 'z' || c == 'Z') {
+                                    binaryPattern += "ZZZZ";
+                                } else {
+                                    // Convert hex digit to 4-bit binary
+                                    int digit = (c >= '0' && c <= '9') ? c - '0' : 
+                                              (c >= 'A' && c <= 'F') ? c - 'A' + 10 :
+                                              (c >= 'a' && c <= 'f') ? c - 'a' + 10 : 0;
+                                    for (int i = 3; i >= 0; i--) {
+                                        binaryPattern += ((digit >> i) & 1) ? '1' : '0';
+                                    }
+                                }
+                            }
+                            // Trim to actual width
+                            if (binaryPattern.length() > width) {
+                                binaryPattern = binaryPattern.substr(binaryPattern.length() - width);
+                            }
+                            return fmt::format("sc_lv<{}>(\"{}\")", width, binaryPattern);
+                        }
                         return "0x" + value;
                     } else if (base == 'o') {
-                        // Octal value  
+                        // Octal value - handle X/Z states  
+                        if (value.find('x') != std::string::npos || value.find('X') != std::string::npos ||
+                            value.find('z') != std::string::npos || value.find('Z') != std::string::npos) {
+                            // Extract width and convert similar to hex case
+                            std::string widthStr = operand.substr(0, pos);
+                            int width = std::stoi(widthStr);
+                            std::string binaryPattern = "";
+                            for (char c : value) {
+                                if (c == 'x' || c == 'X') {
+                                    binaryPattern += "XXX";
+                                } else if (c == 'z' || c == 'Z') {
+                                    binaryPattern += "ZZZ";
+                                } else {
+                                    // Convert octal digit to 3-bit binary
+                                    int digit = c - '0';
+                                    for (int i = 2; i >= 0; i--) {
+                                        binaryPattern += ((digit >> i) & 1) ? '1' : '0';
+                                    }
+                                }
+                            }
+                            // Trim to actual width
+                            if (binaryPattern.length() > width) {
+                                binaryPattern = binaryPattern.substr(binaryPattern.length() - width);
+                            }
+                            return fmt::format("sc_lv<{}>(\"{}\")", width, binaryPattern);
+                        }
                         return "0" + value;
                     }
                 }
@@ -430,9 +507,24 @@ std::string SVToSCVisitor::extractExpressionText(const slang::ast::Expression& e
                 case slang::ast::UnaryOperator::Plus: return "+" + operand;
                 case slang::ast::UnaryOperator::Minus: return "-" + operand;
                 case slang::ast::UnaryOperator::BitwiseNot: return "~" + operand;
-                case slang::ast::UnaryOperator::BitwiseAnd: return "&" + operand;
-                case slang::ast::UnaryOperator::BitwiseOr: return "|" + operand;
-                case slang::ast::UnaryOperator::BitwiseXor: return "^" + operand;
+                case slang::ast::UnaryOperator::BitwiseAnd: 
+                    // Reduction AND - convert to SystemC or_reduce
+                    if (operand.find(".read()") == std::string::npos && isSignalName(operand)) {
+                        return operand + ".read().and_reduce()";
+                    }
+                    return "(" + operand + ").and_reduce()";
+                case slang::ast::UnaryOperator::BitwiseOr: 
+                    // Reduction OR - convert to SystemC or_reduce
+                    if (operand.find(".read()") == std::string::npos && isSignalName(operand)) {
+                        return operand + ".read().or_reduce()";
+                    }
+                    return "(" + operand + ").or_reduce()";
+                case slang::ast::UnaryOperator::BitwiseXor:
+                    // Reduction XOR - convert to SystemC xor_reduce
+                    if (operand.find(".read()") == std::string::npos && isSignalName(operand)) {
+                        return operand + ".read().xor_reduce()";
+                    }
+                    return "(" + operand + ").xor_reduce()";
                 case slang::ast::UnaryOperator::LogicalNot: return "!" + operand;
                 default: return "(" + operand + ")";
             }

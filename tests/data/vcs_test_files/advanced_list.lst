@@ -1,0 +1,3 @@
+core.sv
+testbench.sv
+relative/path/design.sv

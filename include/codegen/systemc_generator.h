@@ -126,6 +126,11 @@ private:
     std::string generateIncludes(const ModuleData& module) const;
     std::string generateModuleInstances(const ModuleData& module) const;
     
+    // Type conversion helpers
+    std::string applyTypeConversion(const std::string& lhs, const std::string& rhs) const;
+    std::string convertIntegerToScLogic(const std::string& value) const;
+    std::string getSignalType(const std::string& signalName) const;
+    
     std::string getIndent() const;
     std::string mapDataType(SystemCDataType type, int width = 1) const;
     std::string generatePortDeclaration(const Port& port) const;

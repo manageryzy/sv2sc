@@ -589,12 +589,8 @@ private:
             auto& root = compilation.getRoot();
             visitor.visit(root);
             
-            // Generate output files
-            std::string baseName = std::filesystem::path(inputFile).stem();
-            std::string headerPath = options_.outputDir + "/" + baseName + ".h";
-            std::string implPath = options_.outputDir + "/" + baseName + ".cpp";
-            
-            if (!generator.writeToFile(headerPath, implPath)) {
+            // Generate output files using header-only approach with full constructor bodies
+            if (!generator.writeAllModuleFiles(options_.outputDir)) {
                 std::string error = fmt::format("Failed to write output files for: {}", inputFile);
                 LOG_ERROR(error);
                 errors_.push_back(error);

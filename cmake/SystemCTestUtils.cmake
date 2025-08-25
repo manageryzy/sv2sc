@@ -9,6 +9,7 @@ function(add_sv2sc_test)
         TOP_MODULE          # Top module name for translation
         SV_SOURCE          # SystemVerilog source file
         EXPECTED_PORTS     # Expected number of ports (optional)
+        TRANSLATOR_ARGS    # Additional arguments to pass to sv2sc translator
     )
     set(multiValueArgs
         SV_INCLUDES        # Include directories for SV compilation
@@ -50,6 +51,13 @@ function(add_sv2sc_test)
         list(APPEND DEFINE_ARGS "-D" "${define}")
     endforeach()
     
+    # Parse additional translator arguments
+    set(ADDITIONAL_ARGS "")
+    if(SV2SC_TEST_TRANSLATOR_ARGS)
+        string(REPLACE " " ";" ADDITIONAL_ARGS_LIST "${SV2SC_TEST_TRANSLATOR_ARGS}")
+        set(ADDITIONAL_ARGS ${ADDITIONAL_ARGS_LIST})
+    endif()
+    
     # Step 1: SystemVerilog to SystemC translation
     add_custom_command(
         OUTPUT 
@@ -61,6 +69,7 @@ function(add_sv2sc_test)
             -o ${TEST_OUTPUT_DIR}
             ${INCLUDE_ARGS}
             ${DEFINE_ARGS}
+            ${ADDITIONAL_ARGS}
             ${SV2SC_TEST_SV_SOURCE}
         DEPENDS sv2sc ${SV2SC_TEST_SV_SOURCE} ${SV2SC_TEST_DEPENDENCIES}
         COMMENT "Translating ${SV2SC_TEST_SV_SOURCE} to SystemC"

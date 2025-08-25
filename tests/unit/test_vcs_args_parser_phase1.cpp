@@ -406,29 +406,27 @@ TEST_CASE("VCS Args Parser - Phase 1: File Lists (-f)", "[vcs][phase1]") {
     }
     
     SECTION("-f with relative and absolute paths") {
-        // Create file list with relative path to existing test data
-        std::string fileList = TempFileHelper::createTempFile(
-            "relative/path/design.sv\n"   // relative path within test data
-            + TempFileHelper::getTestDataFile("testbench.sv") + "\n"  // absolute path
-            + TempFileHelper::getTestDataFile("core.sv"),
-            ".f"
-        );
+        // Create file list in test data directory so relative paths can be resolved
+        std::string testDataDir = "/home/mana/workspace/sv2sc/tests/data/vcs_test_files";
+        std::string fileListPath = testDataDir + "/test_file_list.f";
         
-        // Change to test data directory for relative path resolution
-        std::string originalDir = std::filesystem::current_path();
-        std::filesystem::current_path("/home/mana/workspace/sv2sc/tests/data/vcs_test_files");
+        // Create file list with relative path from test data directory
+        std::ofstream fileList(fileListPath);
+        fileList << "relative/path/design.sv\n";   // relative path within test data
+        fileList << TempFileHelper::getTestDataFile("testbench.sv") << "\n";  // absolute path
+        fileList << TempFileHelper::getTestDataFile("core.sv");
+        fileList.close();
         
-        const char* args[] = {"sv2sc", "-f", fileList.c_str(), testFile.c_str()};
+        const char* args[] = {"sv2sc", "-f", fileListPath.c_str(), testFile.c_str()};
         
         REQUIRE(parser.parse(4, args));
         auto& arguments = parser.getArguments();
         
         REQUIRE(arguments.fileListFiles.size() == 1);
-        REQUIRE(arguments.fileListFiles[0] == fileList);
+        REQUIRE(arguments.fileListFiles[0] == fileListPath);
         
-        // Restore original directory
-        std::filesystem::current_path(originalDir);
-        TempFileHelper::cleanup(fileList);
+        // Clean up
+        std::filesystem::remove(fileListPath);
     }
     
     TempFileHelper::cleanup(testFile);

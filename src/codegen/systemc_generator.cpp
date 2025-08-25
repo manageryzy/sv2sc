@@ -197,7 +197,8 @@ void SystemCCodeGenerator::addCombinationalAssignment(const std::string& lhs, co
     if (!module) return;
     
     if (lhs != "unknown_expr" && rhs != "unknown_expr") {
-        module->combProcessCode << fmt::format("{}        {}.write({});\n", getIndent(), lhs, rhs);
+        std::string convertedRhs = applyTypeConversion(lhs, rhs);
+        module->combProcessCode << fmt::format("{}        {}.write({});\n", getIndent(), lhs, convertedRhs);
         module->hasCombProcess = true;
     } else {
         module->combProcessCode << fmt::format("{}        // Skipping combinational assignment: {} = {}\n", getIndent(), lhs, rhs);
@@ -210,7 +211,8 @@ void SystemCCodeGenerator::addSequentialAssignment(const std::string& lhs, const
     if (!module) return;
     
     if (lhs != "unknown_expr" && rhs != "unknown_expr") {
-        module->seqProcessCode << fmt::format("{}        {}.write({});\n", getIndent(), lhs, rhs);
+        std::string convertedRhs = applyTypeConversion(lhs, rhs);
+        module->seqProcessCode << fmt::format("{}        {}.write({});\n", getIndent(), lhs, convertedRhs);
         module->hasSeqProcess = true;
     } else {
         module->seqProcessCode << fmt::format("{}        // Skipping sequential assignment: {} <= {}\n", getIndent(), lhs, rhs);
@@ -459,7 +461,8 @@ bool SystemCCodeGenerator::writeAllModuleFiles(const std::string& outputDir) con
             success = false;
             continue;
         }
-        headerFile << generateModuleHeader(moduleName);
+        // Use the complete header code built by endModule() instead of generateModuleHeader()
+        headerFile << module->headerCode.str();
         headerFile.close();
         
         // Write implementation file
@@ -686,6 +689,106 @@ std::string SystemCCodeGenerator::generateModuleInstances(const ModuleData& modu
 
 std::string SystemCCodeGenerator::getIndent() const {
     return std::string(indentLevel_ * 4, ' ');
+}
+
+std::string SystemCCodeGenerator::applyTypeConversion(const std::string& lhs, const std::string& rhs) const {
+    // Handle integer to sc_logic conversions
+    if (rhs == "0" || rhs == "1") {
+        std::string lhsType = getSignalType(lhs);
+        if (lhsType.find("sc_logic") != std::string::npos) {
+            return convertIntegerToScLogic(rhs);
+        }
+    }
+    
+    // Handle signal to port conversions with type mismatches
+    if (rhs.find(".read()") == std::string::npos) {
+        // Check for common type conversion cases
+        std::string lhsType = getSignalType(lhs);
+        std::string rhsType = getSignalType(rhs);
+        
+        // Debug logging
+        LOG_DEBUG("Type conversion: lhs='{}' ({}), rhs='{}' ({})", lhs, lhsType, rhs, rhsType);
+        
+        // Only proceed if we have type information
+        if (!lhsType.empty() && !rhsType.empty()) {
+            // sc_uint signal to sc_lv port conversion
+            if (lhsType.find("sc_lv") != std::string::npos && 
+                (rhsType.find("sc_uint") != std::string::npos || rhsType.find("sc_signal") != std::string::npos)) {
+                // Extract bit width from lhs type (e.g., sc_lv<8>)
+                size_t start = lhsType.find('<');
+                size_t end = lhsType.find('>', start);
+                if (start != std::string::npos && end != std::string::npos) {
+                    std::string width = lhsType.substr(start + 1, end - start - 1);
+                    std::string rhsWithRead = (rhs.find(".read()") == std::string::npos) ? rhs + ".read()" : rhs;
+                    std::string result = fmt::format("sc_lv<{}>({})", width, rhsWithRead);
+                    LOG_DEBUG("Applied sc_uint->sc_lv conversion: {} -> {}", rhs, result);
+                    return result;
+                }
+            }
+            
+            // sc_lv signal to sc_uint port conversion
+            if (lhsType.find("sc_uint") != std::string::npos && 
+                rhsType.find("sc_lv") != std::string::npos) {
+                // Extract bit width from lhs type
+                size_t start = lhsType.find('<');
+                size_t end = lhsType.find('>', start);
+                if (start != std::string::npos && end != std::string::npos) {
+                    std::string width = lhsType.substr(start + 1, end - start - 1);
+                    std::string result = fmt::format("sc_uint<{}>({})", width, rhs + ".read().to_uint()");
+                    LOG_DEBUG("Applied sc_lv->sc_uint conversion: {} -> {}", rhs, result);
+                    return result;
+                }
+            }
+        }
+        
+        // sc_signal reference to direct value (needs .read())
+        if (rhsType.find("sc_signal") != std::string::npos) {
+            return rhs + ".read()";
+        }
+        
+        // If we have a signal name that's not a literal, add .read()
+        if (!rhsType.empty() && rhsType.find("sc_") != std::string::npos && 
+            rhs != "0" && rhs != "1" && rhs.find("(") == std::string::npos) {
+            return rhs + ".read()";
+        }
+    }
+    
+    return rhs;
+}
+
+std::string SystemCCodeGenerator::convertIntegerToScLogic(const std::string& value) const {
+    if (value == "0") {
+        return "sc_logic('0')";
+    } else if (value == "1") {
+        return "sc_logic('1')";
+    }
+    return value;
+}
+
+std::string SystemCCodeGenerator::getSignalType(const std::string& signalName) const {
+    const auto* module = getCurrentModuleData();
+    if (!module) return "";
+    
+    // Check ports
+    for (const auto& port : module->ports) {
+        if (port.name == signalName) {
+            return mapDataType(port.dataType, port.width);
+        }
+    }
+    
+    // Check signals
+    for (const auto& signal : module->signals) {
+        if (signal.name == signalName) {
+            return mapDataType(signal.dataType, signal.width);
+        }
+    }
+    
+    // Default guess based on naming conventions
+    if (signalName.find("mem_do_") != std::string::npos) {
+        return "sc_logic";
+    }
+    
+    return "";
 }
 
 std::string SystemCCodeGenerator::mapDataType(SystemCDataType type, int width) const {
