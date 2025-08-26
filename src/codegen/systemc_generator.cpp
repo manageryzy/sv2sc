@@ -205,22 +205,28 @@ void SystemCCodeGenerator::addBlockingAssignment(const std::string& lhs, const s
     auto* module = getCurrentModuleData();
     if (!module) return;
     
+    // Sanitize the RHS expression to handle don't-care values
+    std::string sanitizedRhs = sanitizeExpression(rhs);
+    
     // For SystemC, we need to check if lhs is a signal and use write() method
     // For now, assume signals need .write() and ports use direct assignment
-    if (lhs != "unknown_expr" && rhs != "unknown_expr") {
-        module->processCode << fmt::format("{}        {}.write({});\n", getIndent(), lhs, rhs);
+    if (lhs != "unknown_expr" && sanitizedRhs != "unknown_expr") {
+        module->processCode << fmt::format("{}        {}.write({});\n", getIndent(), lhs, sanitizedRhs);
     } else {
-        module->processCode << fmt::format("{}        // Skipping assignment: {} = {}\n", getIndent(), lhs, rhs);
+        module->processCode << fmt::format("{}        // Skipping assignment: {} = {}\n", getIndent(), lhs, sanitizedRhs);
     }
-    LOG_DEBUG("Added blocking assignment: {} = {}", lhs, rhs);
+    LOG_DEBUG("Added blocking assignment: {} = {}", lhs, sanitizedRhs);
 }
 
 void SystemCCodeGenerator::addNonBlockingAssignment(const std::string& lhs, const std::string& rhs) {
     auto* module = getCurrentModuleData();
     if (!module) return;
     
-    module->processCode << fmt::format("{}        {}.write({});\n", getIndent(), lhs, rhs);
-    LOG_DEBUG("Added non-blocking assignment: {} <= {}", lhs, rhs);
+    // Sanitize the RHS expression to handle don't-care values
+    std::string sanitizedRhs = sanitizeExpression(rhs);
+    
+    module->processCode << fmt::format("{}        {}.write({});\n", getIndent(), lhs, sanitizedRhs);
+    LOG_DEBUG("Added non-blocking assignment: {} <= {}", lhs, sanitizedRhs);
 }
 
 void SystemCCodeGenerator::addDelayedAssignment(const std::string& lhs, const std::string& rhs, const std::string& delay) {
@@ -236,28 +242,34 @@ void SystemCCodeGenerator::addCombinationalAssignment(const std::string& lhs, co
     auto* module = getCurrentModuleData();
     if (!module) return;
     
-    if (lhs != "unknown_expr" && rhs != "unknown_expr") {
-        std::string convertedRhs = applyTypeConversion(lhs, rhs);
+    // Sanitize the RHS expression to handle don't-care values
+    std::string sanitizedRhs = sanitizeExpression(rhs);
+    
+    if (lhs != "unknown_expr" && sanitizedRhs != "unknown_expr") {
+        std::string convertedRhs = applyTypeConversion(lhs, sanitizedRhs);
         module->combProcessCode << fmt::format("{}        {}.write({});\n", getIndent(), lhs, convertedRhs);
         module->hasCombProcess = true;
     } else {
-        module->combProcessCode << fmt::format("{}        // Skipping combinational assignment: {} = {}\n", getIndent(), lhs, rhs);
+        module->combProcessCode << fmt::format("{}        // Skipping combinational assignment: {} = {}\n", getIndent(), lhs, sanitizedRhs);
     }
-    LOG_DEBUG("Added combinational assignment: {} = {}", lhs, rhs);
+    LOG_DEBUG("Added combinational assignment: {} = {}", lhs, sanitizedRhs);
 }
 
 void SystemCCodeGenerator::addSequentialAssignment(const std::string& lhs, const std::string& rhs) {
     auto* module = getCurrentModuleData();
     if (!module) return;
     
-    if (lhs != "unknown_expr" && rhs != "unknown_expr") {
-        std::string convertedRhs = applyTypeConversion(lhs, rhs);
+    // Sanitize the RHS expression to handle don't-care values
+    std::string sanitizedRhs = sanitizeExpression(rhs);
+    
+    if (lhs != "unknown_expr" && sanitizedRhs != "unknown_expr") {
+        std::string convertedRhs = applyTypeConversion(lhs, sanitizedRhs);
         module->seqProcessCode << fmt::format("{}        {}.write({});\n", getIndent(), lhs, convertedRhs);
         module->hasSeqProcess = true;
     } else {
-        module->seqProcessCode << fmt::format("{}        // Skipping sequential assignment: {} <= {}\n", getIndent(), lhs, rhs);
+        module->seqProcessCode << fmt::format("{}        // Skipping sequential assignment: {} <= {}\n", getIndent(), lhs, sanitizedRhs);
     }
-    LOG_DEBUG("Added sequential assignment: {} <= {}", lhs, rhs);
+    LOG_DEBUG("Added sequential assignment: {} <= {}", lhs, sanitizedRhs);
 }
 
 void SystemCCodeGenerator::beginGenerateBlock(const std::string& label) {
@@ -575,13 +587,47 @@ bool SystemCCodeGenerator::generateMainHeader(const std::string& outputDir, cons
 std::string SystemCCodeGenerator::generateConstructorForModule(const ModuleData& module) const {
     std::stringstream constructor;
     
-    bool hasAnyProcesses = !module.processCode.str().empty() || 
-                          module.hasCombProcess || 
-                          module.hasSeqProcess;
+    // Check if we have new-style process blocks
+    bool hasProcessBlocks = !module.processBlocks.empty();
+    
+    // Register processes (new style - multiple process blocks)
+    if (hasProcessBlocks) {
+        constructor << getIndent() << "    // Register process blocks\n";
+        
+        for (const auto& block : module.processBlocks) {
+            constructor << getIndent() << "    SC_METHOD(" << block.name << ");\n";
+            
+            // Add sensitivity
+            if (!block.sensitivity.empty()) {
+                constructor << getIndent() << "    sensitive";
+                bool first = true;
+                for (const auto& signal : block.sensitivity) {
+                    if (!first) constructor << " << ";
+                    else constructor << " << ";
+                    
+                    // Handle clock edges
+                    if (signal == block.clockSignal && block.isSequential) {
+                        constructor << signal << ".pos()";
+                    } else {
+                        constructor << signal;
+                    }
+                    first = false;
+                }
+                constructor << ";\n";
+            }
+            constructor << "\n";
+        }
+    }
+    
+    // Legacy process registration (if no new-style blocks)
+    bool hasAnyProcesses = !hasProcessBlocks && 
+                          (!module.processCode.str().empty() || 
+                           module.hasCombProcess || 
+                           module.hasSeqProcess);
     
     // Generate sensitivity list for processes - only if we have processes
     if (hasAnyProcesses) {
-        constructor << getIndent() << "    // Process sensitivity\n";
+        constructor << getIndent() << "    // Process sensitivity (legacy)\n";
         
         // Add clock and reset detection
         bool hasClk = std::any_of(module.ports.begin(), module.ports.end(), 
@@ -686,6 +732,23 @@ std::string SystemCCodeGenerator::generateConstructorForModule(const ModuleData&
 std::string SystemCCodeGenerator::generateProcessMethodsForModule(const ModuleData& module) const {
     std::stringstream methods;
     
+    // Check for new-style process blocks first
+    bool hasProcessBlocks = !module.processBlocks.empty();
+    
+    if (hasProcessBlocks) {
+        methods << "\nprivate:\n";
+        
+        // Generate methods for each process block
+        for (const auto& block : module.processBlocks) {
+            methods << "    void " << block.name << "() {\n";
+            methods << block.code.str();
+            methods << "    }\n\n";
+        }
+        
+        return methods.str();
+    }
+    
+    // Legacy process generation
     bool hasAnyProcesses = !module.processCode.str().empty() || 
                           module.hasCombProcess || 
                           module.hasSeqProcess;
@@ -758,6 +821,81 @@ std::string SystemCCodeGenerator::generateModuleInstances(const ModuleData& modu
 
 std::string SystemCCodeGenerator::getIndent() const {
     return std::string(indentLevel_ * 4, ' ');
+}
+
+std::string SystemCCodeGenerator::sanitizeExpression(const std::string& expr) const {
+    std::string result = expr;
+    
+    // Replace SystemVerilog don't-care literals with SystemC equivalents
+    // Pattern: N'dx, N'bx, N'hx where N is the width
+    std::regex dontCarePattern(R"((\d+)'[dbho]x)");
+    std::smatch match;
+    
+    while (std::regex_search(result, match, dontCarePattern)) {
+        std::string fullMatch = match[0].str();
+        std::string widthStr = match[1].str();
+        
+        try {
+            int width = std::stoi(widthStr);
+            std::string replacement = fmt::format("sc_lv<{}>(\"{}\")", width, std::string(width, 'X'));
+            result.replace(match.position(), match.length(), replacement);
+        } catch (...) {
+            // If we can't parse the width, use a default
+            result.replace(match.position(), match.length(), "sc_lv<32>(\"XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\")");
+        }
+    }
+    
+    // Also handle high-impedance values (N'dz, N'bz, N'hz)
+    std::regex hiZPattern(R"((\d+)'[dbho]z)");
+    while (std::regex_search(result, match, hiZPattern)) {
+        std::string fullMatch = match[0].str();
+        std::string widthStr = match[1].str();
+        
+        try {
+            int width = std::stoi(widthStr);
+            std::string replacement = fmt::format("sc_lv<{}>(\"{}\")", width, std::string(width, 'Z'));
+            result.replace(match.position(), match.length(), replacement);
+        } catch (...) {
+            result.replace(match.position(), match.length(), "sc_lv<32>(\"ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\")");
+        }
+    }
+    
+    // Handle numeric literals (N'd0, N'b0, N'h0, etc.)
+    std::regex numericPattern(R"((\d+)'([dbho])(\d+))");
+    while (std::regex_search(result, match, numericPattern)) {
+        std::string widthStr = match[1].str();
+        std::string base = match[2].str();
+        std::string valueStr = match[3].str();
+        
+        try {
+            int width = std::stoi(widthStr);
+            int value = 0;
+            
+            // Parse value based on base
+            if (base == "d") {
+                value = std::stoi(valueStr, nullptr, 10);
+            } else if (base == "b") {
+                value = std::stoi(valueStr, nullptr, 2);
+            } else if (base == "h" || base == "o") {
+                value = std::stoi(valueStr, nullptr, base == "h" ? 16 : 8);
+            }
+            
+            // Generate appropriate SystemC literal
+            if (value == 0) {
+                std::string replacement = fmt::format("sc_lv<{}>(0)", width);
+                result.replace(match.position(), match.length(), replacement);
+            } else {
+                std::string replacement = fmt::format("sc_lv<{}>({})", width, value);
+                result.replace(match.position(), match.length(), replacement);
+            }
+        } catch (...) {
+            // If we can't parse, just convert to a simple format
+            std::string replacement = fmt::format("sc_lv<{}>({})", widthStr, valueStr);
+            result.replace(match.position(), match.length(), replacement);
+        }
+    }
+    
+    return result;
 }
 
 std::string SystemCCodeGenerator::applyTypeConversion(const std::string& lhs, const std::string& rhs) const {
@@ -1170,6 +1308,231 @@ std::string SystemCCodeGenerator::generateModuleUsingTemplate(const std::string&
     }
     
     return templateEngine_.render(templateContent, variables, conditionals);
+}
+
+// Multiple process block support implementation
+
+void SystemCCodeGenerator::beginProcessBlock(const std::string& blockName, bool isSequential) {
+    auto* module = getCurrentModuleData();
+    if (!module) {
+        LOG_ERROR("Cannot begin process block without active module");
+        return;
+    }
+    
+    // Save any current process block
+    if (currentProcessBlock_) {
+        LOG_WARN("Starting new process block {} while {} is still active", 
+                   blockName, currentProcessBlock_->name);
+        endProcessBlock();
+    }
+    
+    // Create new process block
+    module->processBlocks.emplace_back();
+    currentProcessBlock_ = &module->processBlocks.back();
+    currentProcessBlock_->name = blockName;
+    currentProcessBlock_->isSequential = isSequential;
+    
+    LOG_DEBUG("Started process block: {} (sequential: {})", blockName, isSequential);
+}
+
+void SystemCCodeGenerator::endProcessBlock() {
+    if (!currentProcessBlock_) {
+        LOG_WARN("endProcessBlock called without active process block");
+        return;
+    }
+    
+    // Count lines in the process
+    std::string code = currentProcessBlock_->code.str();
+    currentProcessBlock_->lineCount = std::count(code.begin(), code.end(), '\n');
+    
+    // Check if we should split this process
+    auto* module = getCurrentModuleData();
+    if (module && module->enableProcessSplitting && 
+        currentProcessBlock_->lineCount > module->maxProcessLines) {
+        splitLargeProcess(*currentProcessBlock_);
+    }
+    
+    LOG_DEBUG("Ended process block: {} ({} lines, {} outputs, {} inputs)", 
+             currentProcessBlock_->name, 
+             currentProcessBlock_->lineCount,
+             currentProcessBlock_->outputs.size(),
+             currentProcessBlock_->inputs.size());
+    
+    currentProcessBlock_ = nullptr;
+}
+
+void SystemCCodeGenerator::addAssignmentToCurrentBlock(const std::string& lhs, const std::string& rhs) {
+    if (!currentProcessBlock_) {
+        LOG_WARN("addAssignmentToCurrentBlock called without active process block");
+        // Fall back to legacy behavior
+        addNonBlockingAssignment(lhs, rhs);
+        return;
+    }
+    
+    std::string sanitizedRhs = sanitizeExpression(rhs);
+    
+    // Track signal usage
+    currentProcessBlock_->outputs.insert(lhs);
+    // TODO: Parse rhs to extract input signals
+    
+    // Add the assignment
+    currentProcessBlock_->code << fmt::format("        {}.write({});\n", lhs, sanitizedRhs);
+    
+    LOG_DEBUG("Added assignment to block {}: {} = {}", 
+             currentProcessBlock_->name, lhs, sanitizedRhs);
+}
+
+void SystemCCodeGenerator::setCurrentBlockSensitivity(const std::set<std::string>& signals) {
+    if (!currentProcessBlock_) {
+        LOG_WARN("setCurrentBlockSensitivity called without active process block");
+        return;
+    }
+    
+    currentProcessBlock_->sensitivity = signals;
+    LOG_DEBUG("Set sensitivity for block {}: {} signals", 
+             currentProcessBlock_->name, signals.size());
+}
+
+void SystemCCodeGenerator::setCurrentBlockClock(const std::string& clockSignal) {
+    if (!currentProcessBlock_) {
+        LOG_WARN("setCurrentBlockClock called without active process block");
+        return;
+    }
+    
+    currentProcessBlock_->clockSignal = clockSignal;
+    currentProcessBlock_->sensitivity.insert(clockSignal);
+    LOG_DEBUG("Set clock for block {}: {}", currentProcessBlock_->name, clockSignal);
+}
+
+void SystemCCodeGenerator::setCurrentBlockReset(const std::string& resetSignal) {
+    if (!currentProcessBlock_) {
+        LOG_WARN("setCurrentBlockReset called without active process block");
+        return;
+    }
+    
+    currentProcessBlock_->resetSignal = resetSignal;
+    currentProcessBlock_->sensitivity.insert(resetSignal);
+    LOG_DEBUG("Set reset for block {}: {}", currentProcessBlock_->name, resetSignal);
+}
+
+void SystemCCodeGenerator::enableProcessSplitting(bool enable) {
+    auto* module = getCurrentModuleData();
+    if (module) {
+        module->enableProcessSplitting = enable;
+        LOG_INFO("Process splitting {} for module {}", 
+                enable ? "enabled" : "disabled", module->name);
+    }
+}
+
+void SystemCCodeGenerator::setMaxProcessLines(int maxLines) {
+    auto* module = getCurrentModuleData();
+    if (module) {
+        module->maxProcessLines = maxLines;
+        LOG_INFO("Set max process lines to {} for module {}", maxLines, module->name);
+    }
+}
+
+void SystemCCodeGenerator::splitLargeProcess(ProcessBlock& process) {
+    LOG_INFO("Splitting large process {} with {} lines", process.name, process.lineCount);
+    
+    // Parse the process code to identify independent assignment groups
+    std::string code = process.code.str();
+    auto splitProcesses = analyzeAndSplitProcess(code, process.outputs);
+    
+    if (splitProcesses.size() <= 1) {
+        LOG_INFO("Process {} cannot be split further", process.name);
+        return;
+    }
+    
+    // Replace the original process with split versions
+    auto* module = getCurrentModuleData();
+    if (!module) return;
+    
+    // Remove the original large process
+    auto it = std::find_if(module->processBlocks.begin(), module->processBlocks.end(),
+                          [&process](const ProcessBlock& pb) { 
+                              return pb.name == process.name; 
+                          });
+    if (it != module->processBlocks.end()) {
+        module->processBlocks.erase(it);
+    }
+    
+    // Add the split processes
+    for (auto& splitProc : splitProcesses) {
+        // Inherit properties from parent process
+        splitProc.isSequential = process.isSequential;
+        splitProc.clockSignal = process.clockSignal;
+        splitProc.resetSignal = process.resetSignal;
+        splitProc.sourceBlock = process.sourceBlock;
+        
+        module->processBlocks.push_back(std::move(splitProc));
+    }
+    
+    LOG_INFO("Split process {} into {} smaller processes", 
+            process.name, splitProcesses.size());
+}
+
+std::vector<ProcessBlock> SystemCCodeGenerator::analyzeAndSplitProcess(
+    const std::string& code, 
+    const std::set<std::string>& signals) {
+    
+    std::vector<ProcessBlock> result;
+    
+    // Simple heuristic: split by contiguous assignment blocks
+    // TODO: Implement more sophisticated dependency analysis
+    
+    std::istringstream stream(code);
+    std::string line;
+    ProcessBlock currentBlock;
+    int blockIndex = 0;
+    int lineCount = 0;
+    const int targetLinesPerBlock = 20; // Target size for each split block
+    
+    while (std::getline(stream, line)) {
+        // Check if we should start a new block
+        if (lineCount >= targetLinesPerBlock && !currentBlock.code.str().empty()) {
+            currentBlock.name = fmt::format("split_proc_{}", blockIndex++);
+            currentBlock.lineCount = lineCount;
+            result.push_back(std::move(currentBlock));
+            currentBlock = ProcessBlock();
+            lineCount = 0;
+        }
+        
+        currentBlock.code << line << "\n";
+        lineCount++;
+        
+        // Try to extract signal names from assignments
+        // Simple pattern: signal.write(...)
+        size_t writePos = line.find(".write(");
+        if (writePos != std::string::npos) {
+            // Extract signal name before .write
+            size_t start = line.find_last_of(" \t", writePos);
+            if (start == std::string::npos) start = 0;
+            else start++;
+            
+            std::string signalName = line.substr(start, writePos - start);
+            currentBlock.outputs.insert(signalName);
+        }
+    }
+    
+    // Add the last block
+    if (!currentBlock.code.str().empty()) {
+        currentBlock.name = fmt::format("split_proc_{}", blockIndex);
+        currentBlock.lineCount = lineCount;
+        result.push_back(std::move(currentBlock));
+    }
+    
+    // If we couldn't split effectively, return the original as a single block
+    if (result.empty()) {
+        ProcessBlock single;
+        single.name = "proc_0";
+        single.code << code;
+        single.outputs = signals;
+        single.lineCount = std::count(code.begin(), code.end(), '\n');
+        result.push_back(std::move(single));
+    }
+    
+    return result;
 }
 
 } // namespace sv2sc::codegen

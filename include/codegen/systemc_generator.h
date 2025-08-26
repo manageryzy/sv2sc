@@ -59,6 +59,20 @@ struct Parameter {
     std::string value;
 };
 
+// Structure for representing individual process blocks
+struct ProcessBlock {
+    std::string name;                    // Process method name (e.g., "alu_proc", "ctrl_proc")
+    std::stringstream code;               // Process body code
+    std::set<std::string> sensitivity;   // Sensitivity list signals
+    std::set<std::string> outputs;       // Signals written in this process
+    std::set<std::string> inputs;        // Signals read in this process
+    bool isSequential = false;           // true for always_ff, false for always_comb
+    std::string clockSignal;             // Clock signal for sequential processes
+    std::string resetSignal;             // Reset signal if applicable
+    int lineCount = 0;                   // Approximate line count for splitting heuristics
+    std::string sourceBlock;             // Source always block identifier
+};
+
 struct ModuleData {
     std::string name;
     std::vector<Port> ports;
@@ -78,6 +92,12 @@ struct ModuleData {
     // Signal usage tracking for precise sensitivity lists
     std::set<std::string> combSensitiveSignals;  // Signals read in combinational processes
     std::set<std::string> seqSensitiveSignals;   // Signals read in sequential processes (excluding clk/reset)
+    
+    // Multiple process block support
+    std::vector<ProcessBlock> processBlocks;      // Individual process blocks
+    std::map<std::string, std::string> signalToProcess;  // Track which process owns each signal
+    bool enableProcessSplitting = true;           // Enable/disable process splitting
+    int maxProcessLines = 50;                     // Maximum lines per process before splitting
 };
 
 class SystemCCodeGenerator {
@@ -110,6 +130,16 @@ public:
     // Process-specific assignment methods
     void addCombinationalAssignment(const std::string& lhs, const std::string& rhs);
     void addSequentialAssignment(const std::string& lhs, const std::string& rhs);
+    
+    // Multiple process block support
+    void beginProcessBlock(const std::string& blockName, bool isSequential = false);
+    void endProcessBlock();
+    void addAssignmentToCurrentBlock(const std::string& lhs, const std::string& rhs);
+    void setCurrentBlockSensitivity(const std::set<std::string>& signals);
+    void setCurrentBlockClock(const std::string& clockSignal);
+    void setCurrentBlockReset(const std::string& resetSignal);
+    void enableProcessSplitting(bool enable = true);
+    void setMaxProcessLines(int maxLines);
     
     // Conditional logic support
     void addConditionalStart(const std::string& condition, bool isSequential = false);
@@ -166,6 +196,7 @@ private:
     std::string getSignalType(const std::string& signalName) const;
     
     std::string getIndent() const;
+    std::string sanitizeExpression(const std::string& expr) const;
     std::string mapDataType(SystemCDataType type, int width = 1) const;
     std::string mapDataType(SystemCDataType type, int width, const std::string& widthExpression) const;
     std::string generatePortDeclaration(const Port& port) const;
@@ -176,6 +207,12 @@ private:
     std::string generateConstructorForModule(const ModuleData& module) const;
     std::string generateProcessMethodsForModule(const ModuleData& module) const;
     bool isSkippingModule() const;
+    
+    // Process block management
+    ProcessBlock* currentProcessBlock_ = nullptr;
+    void splitLargeProcess(ProcessBlock& process);
+    std::vector<ProcessBlock> analyzeAndSplitProcess(const std::string& code, 
+                                                      const std::set<std::string>& signals);
 };
 
 } // namespace sv2sc::codegen

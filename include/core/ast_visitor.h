@@ -60,6 +60,11 @@ private:
     std::set<std::string> declaredSignals_;  // Track all declared signals to prevent duplicates
     bool currentBlockIsSequential_ = false;  // Track if current procedural block is sequential
     
+    // Process block tracking for NBA splitting
+    int processBlockCounter_ = 0;
+    std::string currentProcessBlockName_;
+    bool useProcessBlocks_ = true;  // Enable new process block generation
+    
     // Pattern-based conditional logic detection
     struct AssignmentInfo {
         std::string lhs;

@@ -243,13 +243,9 @@ void SVToSCVisitor::handle(const slang::ast::PortSymbol& node) {
         }
         port.width = static_cast<int>(type.getBitWidth());
         
-        // Try to detect parameter expressions for common widths
-        if (port.width == 4) {
-            port.widthExpression = "WIDTH";  // Assume WIDTH parameter for 4-bit signals
-        } else if (port.width == 5) {
-            port.widthExpression = "WIDTH+1";  // Assume WIDTH+1 for carry signals
-        }
-        // Add more patterns as needed
+        // Don't assume parameter names - use numeric widths
+        // The widthExpression should only be set if we actually detect a parameter reference
+        // For now, leave it empty to use numeric width
         
     } else if (type.isFourState()) {
         port.dataType = SystemCDataType::SC_LOGIC;
@@ -339,12 +335,7 @@ void SVToSCVisitor::handle(const slang::ast::VariableSymbol& node) {
                 }
                 signal.width = static_cast<int>(elementType.getBitWidth());
                 
-                // Try to detect parameter expressions for common widths
-                if (signal.width == 4) {
-                    signal.widthExpression = "WIDTH";  // Assume WIDTH parameter for 4-bit signals
-                } else if (signal.width == 5) {
-                    signal.widthExpression = "WIDTH+1";  // Assume WIDTH+1 for carry signals
-                }
+                // Don't assume parameter names - use numeric widths
             } else if (elementType.isFourState()) {
                 signal.dataType = SystemCDataType::SC_LOGIC;
                 signal.width = 1;
@@ -363,12 +354,7 @@ void SVToSCVisitor::handle(const slang::ast::VariableSymbol& node) {
         }
         signal.width = static_cast<int>(type.getBitWidth());
         
-        // Try to detect parameter expressions for common widths
-        if (signal.width == 4) {
-            signal.widthExpression = "WIDTH";  // Assume WIDTH parameter for 4-bit signals
-        } else if (signal.width == 5) {
-            signal.widthExpression = "WIDTH+1";  // Assume WIDTH+1 for carry signals
-        }
+        // Don't assume parameter names - use numeric widths
     } else if (type.isFourState()) {
         signal.dataType = SystemCDataType::SC_LOGIC;
         signal.width = 1;
@@ -429,11 +415,21 @@ void SVToSCVisitor::handle(const slang::ast::AssignmentExpression& node) {
     // TODO: Check actual assignment operator when API is clarified
     
     if (currentBlockIsSequential_) {
-        // In sequential blocks, collect assignments for pattern analysis
-        LOG_DEBUG("Collecting sequential assignment for pattern analysis: {} <= {}", lhs, convertedRhs);
-        collectAssignment(lhs, convertedRhs);
-        // Track signals used in the RHS for sequential sensitivity
-        extractAndTrackSignals(convertedRhs, true);
+        // Check if we're using new process blocks
+        if (useProcessBlocks_ && !currentProcessBlockName_.empty()) {
+            // Add directly to current process block
+            LOG_DEBUG("Adding assignment to process block {}: {} <= {}", 
+                     currentProcessBlockName_, lhs, convertedRhs);
+            codeGen_.addAssignmentToCurrentBlock(lhs, convertedRhs);
+            // Track signals used in the RHS
+            extractAndTrackSignals(convertedRhs, true);
+        } else {
+            // Legacy: collect assignments for pattern analysis
+            LOG_DEBUG("Collecting sequential assignment for pattern analysis: {} <= {}", lhs, convertedRhs);
+            collectAssignment(lhs, convertedRhs);
+            // Track signals used in the RHS for sequential sensitivity
+            extractAndTrackSignals(convertedRhs, true);
+        }
     } else {
         // In combinational blocks (always_comb), use combinational assignments directly
         LOG_DEBUG("Adding combinational assignment: {} = {}", lhs, convertedRhs);
@@ -468,7 +464,8 @@ void SVToSCVisitor::handle(const slang::ast::ProceduralBlockSymbol& node) {
             break;
         case ProceduralBlockKind::Always:
             blockType = "always";
-            // For now, treat generic always as combinational unless we detect clocking
+            // Check if it has clock sensitivity to determine if sequential
+            // TODO: Analyze timing control to detect @(posedge clk)
             isSequential = false;
             break;
         case ProceduralBlockKind::Initial:
@@ -495,6 +492,28 @@ void SVToSCVisitor::handle(const slang::ast::ProceduralBlockSymbol& node) {
     bool prevSequential = currentBlockIsSequential_;
     currentBlockIsSequential_ = isSequential;
     
+    // Use new process block generation if enabled
+    if (useProcessBlocks_ && isSequential) {
+        // Generate unique name for this process block
+        currentProcessBlockName_ = fmt::format("{}_{}", blockType, processBlockCounter_++);
+        LOG_DEBUG("Starting new process block: {}", currentProcessBlockName_);
+        
+        // Begin new process block
+        codeGen_.beginProcessBlock(currentProcessBlockName_, isSequential);
+        
+        // TODO: Extract and set sensitivity from timing control
+        // For now, use default clock sensitivity for sequential blocks
+        if (isSequential) {
+            std::set<std::string> sensitivity;
+            sensitivity.insert("clk");  // Default clock signal
+            // Check for reset signal
+            sensitivity.insert("reset");
+            codeGen_.setCurrentBlockSensitivity(sensitivity);
+            codeGen_.setCurrentBlockClock("clk");
+            codeGen_.setCurrentBlockReset("reset");
+        }
+    }
+    
     // Visit the body with proper context
     LOG_DEBUG("Visiting procedural block body");
     
@@ -503,8 +522,13 @@ void SVToSCVisitor::handle(const slang::ast::ProceduralBlockSymbol& node) {
     const auto& body = node.getBody();
     body.visit(*this);
     
-    // If this was a sequential block, analyze collected assignments for patterns
-    if (isSequential) {
+    // End process block if we started one
+    if (useProcessBlocks_ && isSequential) {
+        codeGen_.endProcessBlock();
+        LOG_DEBUG("Ended process block: {}", currentProcessBlockName_);
+        currentProcessBlockName_.clear();
+    } else if (isSequential) {
+        // Legacy: analyze collected assignments for patterns
         analyzeAndGenerateConditionalLogic();
     }
     
@@ -636,13 +660,21 @@ std::string SVToSCVisitor::extractExpressionText(const slang::ast::Expression& e
                         if (value == "x" || value == "X") {
                             // Extract width from the beginning of operand (e.g., "32" from "32'dx")
                             std::string widthStr = operand.substr(0, pos);
-                            int width = std::stoi(widthStr);
-                            return fmt::format("sc_lv<{}>(\"{}\")", width, std::string(width, 'X'));
+                            try {
+                                int width = std::stoi(widthStr);
+                                return fmt::format("sc_lv<{}>(\"{}\")", width, std::string(width, 'X'));
+                            } catch (...) {
+                                return "sc_lv<32>(\"XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\")"; // Default 32-bit
+                            }
                         } else if (value == "z" || value == "Z") {
                             // Extract width from the beginning of operand
                             std::string widthStr = operand.substr(0, pos);
-                            int width = std::stoi(widthStr);
-                            return fmt::format("sc_lv<{}>(\"{}\")", width, std::string(width, 'Z'));
+                            try {
+                                int width = std::stoi(widthStr);
+                                return fmt::format("sc_lv<{}>(\"{}\")", width, std::string(width, 'Z'));
+                            } catch (...) {
+                                return "sc_lv<32>(\"ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\")"; // Default 32-bit
+                            }
                         }
                         return value;
                     } else if (base == 'b') {
