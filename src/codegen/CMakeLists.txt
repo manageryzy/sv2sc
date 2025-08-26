@@ -1,5 +1,6 @@
 set(CODEGEN_SOURCES
     systemc_generator.cpp
+    template_engine.cpp
 )
 
 add_library(sv2sc_codegen STATIC ${CODEGEN_SOURCES})

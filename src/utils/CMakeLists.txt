@@ -1,5 +1,7 @@
 set(UTILS_SOURCES
     logger.cpp
+    error_reporter.cpp
+    performance_profiler.cpp
 )
 
 add_library(sv2sc_utils STATIC ${UTILS_SOURCES})

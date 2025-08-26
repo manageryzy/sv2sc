@@ -18,8 +18,8 @@ TEST_CASE("SystemC Generator Basic Functionality", "[systemc_generator]") {
         generator.beginModule("counter");
         
         // Test that we can add ports using the proper API
-        Port clkPort{"clk", PortDirection::INPUT, SystemCDataType::SC_LOGIC, 1, false, {}};
-        Port countPort{"count", PortDirection::OUTPUT, SystemCDataType::SC_LV, 8, false, {}};
+        Port clkPort{"clk", PortDirection::INPUT, SystemCDataType::SC_LOGIC, 1, "", false, {}};
+        Port countPort{"count", PortDirection::OUTPUT, SystemCDataType::SC_LV, 8, "", false, {}};
         
         REQUIRE_NOTHROW(generator.addPort(clkPort));
         REQUIRE_NOTHROW(generator.addPort(countPort));

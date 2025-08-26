@@ -1,0 +1,46 @@
+#ifndef {{module_name}}_H
+#define {{module_name}}_H
+
+#include <systemc.h>
+
+SC_MODULE({{module_name}}) {
+public:
+{{#if has_ports}}
+    // Ports
+{{ports}}
+{{/if}}
+
+{{#if has_parameters}}
+    // Parameters
+{{parameters}}
+{{/if}}
+
+{{#if has_signals}}
+    // Internal signals
+{{signals}}
+{{/if}}
+
+{{#if has_instances}}
+    // Module instances
+{{instances}}
+{{/if}}
+
+    SC_CTOR({{module_name}}) {
+{{#if has_processes}}
+        // Process sensitivity
+{{processes}}
+{{/if}}
+
+{{#if has_instance_connections}}
+        // Initialize module instances
+{{instance_connections}}
+{{/if}}
+    }
+
+{{#if has_process_methods}}
+private:
+{{process_methods}}
+{{/if}}
+};
+
+#endif

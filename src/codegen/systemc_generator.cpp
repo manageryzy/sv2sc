@@ -94,6 +94,15 @@ void SystemCCodeGenerator::addSignal(const Signal& signal) {
     auto* module = getCurrentModuleData();
     if (!module) return;
     
+    // If this is the first signal and we have parameters, add them before signals
+    if (module->signals.empty() && !module->parameters.empty()) {
+        module->headerCode << "\n" << getIndent() << "// Parameters\n";
+        for (const auto& param : module->parameters) {
+            module->headerCode << getIndent() << "static const int " << param.name << " = " << param.value << ";\n";
+            LOG_DEBUG("Added parameter declaration: {} = {}", param.name, param.value);
+        }
+    }
+    
     module->signals.push_back(signal);
     
     std::string signalDecl = generateSignalDeclaration(signal);
@@ -102,18 +111,41 @@ void SystemCCodeGenerator::addSignal(const Signal& signal) {
     LOG_DEBUG("Added signal declaration: {}", signalDecl);
 }
 
-void SystemCCodeGenerator::addModuleInstance(const std::string& instanceName, const std::string& moduleName) {
+std::string SystemCCodeGenerator::addModuleInstance(const std::string& instanceName, const std::string& moduleName) {
     auto* module = getCurrentModuleData();
-    if (!module) return;
+    if (!module) return "";
+    
+    // Make instance names unique by appending index if duplicates exist
+    std::string uniqueInstanceName = instanceName;
+    int index = 0;
+    
+    // Check if this instance name already exists
+    bool nameExists = false;
+    do {
+        nameExists = false;
+        for (const auto& existingInstance : module->instances) {
+            if (existingInstance.instanceName == uniqueInstanceName) {
+                nameExists = true;
+                uniqueInstanceName = fmt::format("{}_{}", instanceName, index);
+                index++;
+                break;
+            }
+        }
+    } while (nameExists);
     
     ModuleInstance instance;
-    instance.instanceName = instanceName;
+    instance.instanceName = uniqueInstanceName;
     instance.moduleName = moduleName;
     
     module->instances.push_back(instance);
     module->dependencies.insert(moduleName);
     
-    LOG_DEBUG("Added module instance: {} of type {}", instanceName, moduleName);
+    // Add instance declaration to header
+    module->headerCode << getIndent() << moduleName << "* " << uniqueInstanceName << ";\n";
+    
+    LOG_DEBUG("Added module instance: {} of type {} (unique name: {})", instanceName, moduleName, uniqueInstanceName);
+    
+    return uniqueInstanceName;
 }
 
 void SystemCCodeGenerator::addModuleDependency(const std::string& dependencyModule) {
@@ -159,6 +191,14 @@ void SystemCCodeGenerator::updateSignalType(const std::string& signalName, bool 
             return;
         }
     }
+}
+
+void SystemCCodeGenerator::addHeaderComment(const std::string& comment) {
+    auto* module = getCurrentModuleData();
+    if (!module) return;
+    
+    module->headerCode << comment << "\n";
+    LOG_DEBUG("Added header comment: {}", comment);
 }
 
 void SystemCCodeGenerator::addBlockingAssignment(const std::string& lhs, const std::string& rhs) {
@@ -357,6 +397,18 @@ std::string SystemCCodeGenerator::generateModuleHeader(const std::string& module
         header << "    " << generatePortDeclaration(port) << ";\n";
     }
     
+    // Parameters
+    LOG_DEBUG("Header generation: module has {} parameters", module.parameters.size());
+    if (!module.parameters.empty()) {
+        header << "\n    // Parameters\n";
+        for (const auto& param : module.parameters) {
+            header << "    static const int " << param.name << " = " << param.value << ";\n";
+            LOG_DEBUG("Generated parameter: {} = {}", param.name, param.value);
+        }
+    } else {
+        LOG_DEBUG("No parameters to generate in header");
+    }
+    
     // Signals
     if (!module.signals.empty()) {
         header << "\n    // Internal signals\n";
@@ -540,21 +592,36 @@ std::string SystemCCodeGenerator::generateConstructorForModule(const ModuleData&
         // Register combinational process
         if (module.hasCombProcess && !module.combProcessCode.str().empty()) {
             constructor << getIndent() << "    SC_METHOD(comb_proc);\n";
-            constructor << getIndent() << "    sensitive";
             
-            // Add sensitivity to all input ports for combinational logic
-            bool firstSensitive = true;
-            for (const auto& port : module.ports) {
-                if (port.direction == PortDirection::INPUT) {
+            // Use tracked sensitive signals if available, otherwise fall back to all inputs
+            if (!module.combSensitiveSignals.empty()) {
+                constructor << getIndent() << "    sensitive";
+                bool firstSensitive = true;
+                for (const auto& signalName : module.combSensitiveSignals) {
                     if (firstSensitive) {
-                        constructor << " << " << port.name;
+                        constructor << " << " << signalName;
                         firstSensitive = false;
                     } else {
-                        constructor << " << " << port.name;
+                        constructor << " << " << signalName;
                     }
                 }
+                constructor << ";\n\n";
+            } else {
+                // Fallback: Add sensitivity to all input ports for combinational logic
+                constructor << getIndent() << "    sensitive";
+                bool firstSensitive = true;
+                for (const auto& port : module.ports) {
+                    if (port.direction == PortDirection::INPUT) {
+                        if (firstSensitive) {
+                            constructor << " << " << port.name;
+                            firstSensitive = false;
+                        } else {
+                            constructor << " << " << port.name;
+                        }
+                    }
+                }
+                constructor << ";\n\n";
             }
-            constructor << ";\n\n";
         }
         
         // Register sequential process  
@@ -570,9 +637,11 @@ std::string SystemCCodeGenerator::generateConstructorForModule(const ModuleData&
                 bool isResetN = std::any_of(module.ports.begin(), module.ports.end(),
                     [](const Port& p) { return p.name == "resetn" || p.name == "rst_n"; });
                 if (isResetN) {
-                    constructor << getIndent() << "    sensitive << resetn.neg();\n";
+                    // Active low reset - level sensitive
+                    constructor << getIndent() << "    sensitive << resetn;\n";
                 } else {
-                    constructor << getIndent() << "    sensitive << reset.pos();\n";
+                    // Active high reset - level sensitive for async reset
+                    constructor << getIndent() << "    sensitive << reset;\n";
                 }
             }
             constructor << getIndent() << "\n";
@@ -814,6 +883,35 @@ std::string SystemCCodeGenerator::mapDataType(SystemCDataType type, int width) c
     }
 }
 
+std::string SystemCCodeGenerator::mapDataType(SystemCDataType type, int width, const std::string& widthExpression) const {
+    // If we have a parameter expression, use it instead of the numeric width
+    if (!widthExpression.empty()) {
+        switch (type) {
+            case SystemCDataType::SC_BIT:
+                return fmt::format("sc_bv<{}>", widthExpression);
+            case SystemCDataType::SC_LOGIC:
+                return fmt::format("sc_lv<{}>", widthExpression);
+            case SystemCDataType::SC_BV:
+                return fmt::format("sc_bv<{}>", widthExpression);
+            case SystemCDataType::SC_LV:
+                return fmt::format("sc_lv<{}>", widthExpression);
+            case SystemCDataType::SC_INT:
+                return "sc_int<32>";
+            case SystemCDataType::SC_UINT:
+                return "sc_uint<32>";
+            case SystemCDataType::SC_BIGINT:
+                return "sc_bigint<64>";
+            case SystemCDataType::SC_BIGUINT:
+                return "sc_biguint<64>";
+            default:
+                return "sc_logic";
+        }
+    }
+    
+    // Fallback to numeric width
+    return mapDataType(type, width);
+}
+
 std::string SystemCCodeGenerator::generatePortDeclaration(const Port& port) const {
     // Special handling for clock ports
     bool isClock = (port.name == "clk" || port.name == "clock") && 
@@ -838,7 +936,7 @@ std::string SystemCCodeGenerator::generatePortDeclaration(const Port& port) cons
             break;
     }
     
-    std::string dataType = mapDataType(port.dataType, port.width);
+    std::string dataType = mapDataType(port.dataType, port.width, port.widthExpression);
     std::string decl = fmt::format("{}<{}> {}", direction, dataType, port.name);
     
     // Handle arrays
@@ -858,13 +956,17 @@ std::string SystemCCodeGenerator::generateSignalDeclaration(const Signal& signal
     // Choose appropriate SystemC type based on usage
     if (signal.preferArithmetic && signal.width > 1) {
         // Use sc_uint for multi-bit arithmetic signals
-        dataType = fmt::format("sc_uint<{}>", signal.width);
+        if (!signal.widthExpression.empty()) {
+            dataType = fmt::format("sc_uint<{}>", signal.widthExpression);
+        } else {
+            dataType = fmt::format("sc_uint<{}>", signal.width);
+        }
     } else if (signal.preferArithmetic && signal.width == 1) {
         // Use unsigned int for single-bit arithmetic
         dataType = "unsigned int";
     } else {
         // Use standard logic type mapping for non-arithmetic signals
-        dataType = mapDataType(signal.dataType, signal.width);
+        dataType = mapDataType(signal.dataType, signal.width, signal.widthExpression);
     }
     
     // Handle arrays
@@ -899,6 +1001,175 @@ bool SystemCCodeGenerator::isSkippingModule() const {
     
     auto* module = getCurrentModuleData();
     return (module == nullptr);
+}
+
+void SystemCCodeGenerator::addConditionalStart(const std::string& condition, bool isSequential) {
+    auto* module = getCurrentModuleData();
+    if (!module) return;
+    
+    std::string ifStatement = fmt::format("{}        if ({}) {{\n", getIndent(), condition);
+    
+    if (isSequential) {
+        module->hasSeqProcess = true;
+        module->seqProcessCode << ifStatement;
+    } else {
+        module->hasCombProcess = true;
+        module->combProcessCode << ifStatement;
+    }
+    
+    LOG_DEBUG("Added conditional start: if ({})", condition);
+}
+
+void SystemCCodeGenerator::addElseClause(bool isSequential) {
+    auto* module = getCurrentModuleData();
+    if (!module) return;
+    
+    std::string elseStatement = fmt::format("{}        }} else {{\n", getIndent());
+    
+    if (isSequential) {
+        module->seqProcessCode << elseStatement;
+    } else {
+        module->combProcessCode << elseStatement;
+    }
+    
+    LOG_DEBUG("Added else clause");
+}
+
+void SystemCCodeGenerator::addConditionalEnd(bool isSequential) {
+    auto* module = getCurrentModuleData();
+    if (!module) return;
+    
+    std::string endStatement = fmt::format("{}        }}\n", getIndent());
+    
+    if (isSequential) {
+        module->seqProcessCode << endStatement;
+    } else {
+        module->combProcessCode << endStatement;
+    }
+    
+    LOG_DEBUG("Added conditional end");
+}
+
+void SystemCCodeGenerator::addCombSensitiveSignal(const std::string& signalName) {
+    auto* module = getCurrentModuleData();
+    if (!module) return;
+    
+    // Skip clock, reset signals, and parameters for combinational sensitivity
+    bool isParameter = std::any_of(module->parameters.begin(), module->parameters.end(),
+        [&signalName](const Parameter& p) { return p.name == signalName; });
+    
+    if (signalName != "clk" && signalName != "clock" && 
+        signalName != "reset" && signalName != "resetn" && signalName != "rst_n" &&
+        !isParameter) {
+        module->combSensitiveSignals.insert(signalName);
+        LOG_DEBUG("Added combinational sensitive signal: {}", signalName);
+    } else if (isParameter) {
+        LOG_DEBUG("Skipped parameter in sensitivity list: {}", signalName);
+    }
+}
+
+void SystemCCodeGenerator::addSeqSensitiveSignal(const std::string& signalName) {
+    auto* module = getCurrentModuleData();
+    if (!module) return;
+    
+    // Only add non-clock/reset signals to sequential sensitivity
+    if (signalName != "clk" && signalName != "clock" && 
+        signalName != "reset" && signalName != "resetn" && signalName != "rst_n") {
+        module->seqSensitiveSignals.insert(signalName);
+        LOG_DEBUG("Added sequential sensitive signal: {}", signalName);
+    }
+}
+
+void SystemCCodeGenerator::addParameter(const std::string& name, const std::string& value) {
+    auto* module = getCurrentModuleData();
+    if (!module) return;
+    
+    Parameter param;
+    param.name = name;
+    param.value = value;
+    
+    module->parameters.push_back(param);
+    LOG_DEBUG("Added parameter: {} = {}", name, value);
+}
+
+void SystemCCodeGenerator::enableTemplateMode(bool enable) {
+    templateMode_ = enable;
+    LOG_DEBUG("Template mode {}", enable ? "enabled" : "disabled");
+}
+
+void SystemCCodeGenerator::setTemplateDirectory(const std::string& templateDir) {
+    templateDirectory_ = templateDir;
+    LOG_DEBUG("Template directory set to: {}", templateDir);
+}
+
+std::string SystemCCodeGenerator::generateModuleUsingTemplate(const std::string& moduleName) {
+    auto it = modules_.find(moduleName);
+    if (it == modules_.end()) {
+        LOG_ERROR("Module not found for template generation: {}", moduleName);
+        return "";
+    }
+    
+    const auto& module = *it->second;
+    
+    // Prepare template variables
+    TemplateEngine::VariableMap variables;
+    variables["module_name"] = moduleName;
+    
+    // Generate ports section
+    std::stringstream portsStream;
+    for (const auto& port : module.ports) {
+        portsStream << "    " << generatePortDeclaration(port) << ";\n";
+    }
+    variables["ports"] = portsStream.str();
+    
+    // Generate parameters section
+    std::stringstream paramsStream;
+    for (const auto& param : module.parameters) {
+        paramsStream << "    static const int " << param.name << " = " << param.value << ";\n";
+    }
+    variables["parameters"] = paramsStream.str();
+    
+    // Generate signals section
+    std::stringstream signalsStream;
+    for (const auto& signal : module.signals) {
+        signalsStream << "    " << generateSignalDeclaration(signal) << ";\n";
+    }
+    variables["signals"] = signalsStream.str();
+    
+    // Generate instances section
+    std::stringstream instancesStream;
+    for (const auto& instance : module.instances) {
+        instancesStream << "    " << instance.moduleName << "* " << instance.instanceName << ";\n";
+    }
+    variables["instances"] = instancesStream.str();
+    
+    // Generate instance connections section
+    std::stringstream connectionsStream;
+    for (const auto& instance : module.instances) {
+        connectionsStream << "        " << instance.instanceName << " = new " << instance.moduleName << "(\"" << instance.instanceName << "\");\n";
+    }
+    variables["instance_connections"] = connectionsStream.str();
+    
+    // Prepare conditionals
+    TemplateEngine::ConditionalMap conditionals;
+    conditionals["has_ports"] = !module.ports.empty();
+    conditionals["has_parameters"] = !module.parameters.empty();
+    conditionals["has_signals"] = !module.signals.empty();
+    conditionals["has_processes"] = module.hasCombProcess || module.hasSeqProcess;
+    conditionals["has_instances"] = !module.instances.empty();
+    conditionals["has_instance_connections"] = !module.instances.empty();
+    conditionals["has_process_methods"] = module.hasCombProcess || module.hasSeqProcess;
+    
+    // Load and render template
+    std::string templatePath = templateDirectory_ + "/systemc_module.h.template";
+    std::string templateContent = templateEngine_.loadTemplate(templatePath);
+    
+    if (templateContent.empty()) {
+        LOG_ERROR("Failed to load template: {}", templatePath);
+        return generateModuleHeader(moduleName); // Fallback to original method
+    }
+    
+    return templateEngine_.render(templateContent, variables, conditionals);
 }
 
 } // namespace sv2sc::codegen

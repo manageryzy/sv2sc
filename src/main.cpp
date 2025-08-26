@@ -1,7 +1,10 @@
 #include "sv2sc/sv2sc.h"
 #include "translator/vcs_args_parser.h"
 #include "utils/logger.h"
+#include "utils/error_reporter.h"
+#include "utils/performance_profiler.h"
 #include <iostream>
+#include <iomanip>
 #include <cstdlib>
 
 using namespace sv2sc;
@@ -49,16 +52,20 @@ TranslationOptions convertVCSToTranslationOptions(const translator::VCSArguments
 
 int main(int argc, char* argv[]) {
     try {
+        PROFILE_SCOPE("Total Translation Time");
+        
         // Parse command line arguments
         translator::VCSArgsParser parser;
-        if (!parser.parse(argc, argv)) {
-            return EXIT_FAILURE;
+        TranslationOptions options;
+        {
+            PROFILE_SCOPE("Command Line Parsing");
+            if (!parser.parse(argc, argv)) {
+                return EXIT_FAILURE;
+            }
+            
+            const auto& args = parser.getArguments();
+            options = convertVCSToTranslationOptions(args);
         }
-        
-        const auto& args = parser.getArguments();
-        
-        // Convert VCS arguments to translation options
-        TranslationOptions options = convertVCSToTranslationOptions(args);
         
         // Create and run translator
         SystemVerilogToSystemCTranslator translator(options);
@@ -66,40 +73,76 @@ int main(int argc, char* argv[]) {
         LOG_INFO("sv2sc - SystemVerilog to SystemC Translator v1.0.0");
         LOG_INFO("Processing {} input file(s)", options.inputFiles.size());
         
-        bool success = translator.translate();
+        bool success;
+        {
+            PROFILE_SCOPE("SystemVerilog Translation");
+            success = translator.translate();
+        }
         
-        // Report results
+        // Get enhanced error reporting
+        auto& errorReporter = utils::getGlobalErrorReporter();
+        
+        // Report results using enhanced error reporter
         const auto& errors = translator.getErrors();
         const auto& warnings = translator.getWarnings();
         
-        if (!warnings.empty()) {
-            std::cout << "\nWarnings (" << warnings.size() << "):\n";
-            for (const auto& warning : warnings) {
-                std::cout << "  " << warning << "\n";
-            }
+        // Add legacy errors/warnings to the error reporter for consistent formatting
+        for (const auto& warning : warnings) {
+            errorReporter.warning(warning);
         }
         
-        if (!errors.empty()) {
-            std::cout << "\nErrors (" << errors.size() << "):\n";
-            for (const auto& error : errors) {
-                std::cout << "  " << error << "\n";
-            }
+        for (const auto& error : errors) {
+            errorReporter.error(error);
         }
         
-        if (success) {
+        // Print all diagnostics with enhanced formatting
+        if (errorReporter.getDiagnosticCount() > 0) {
+            std::cout << "\n=== Translation Diagnostics ===\n";
+            errorReporter.printDiagnostics();
+            std::cout << "\n" << errorReporter.getSummary() << "\n";
+        }
+        
+        // Print performance report if enabled
+        auto& profiler = utils::getGlobalProfiler();
+        if (profiler.isEnabled() && options.enableVerbose) {
+            profiler.printSummary();
+        }
+        
+        if (success && !errorReporter.hasErrors()) {
             std::cout << "\nTranslation completed successfully!\n";
             std::cout << "Output files generated in: " << options.outputDir << "\n";
+            
+            // Show brief performance info
+            if (profiler.isEnabled()) {
+                double totalTime = profiler.getTotalTime();
+                if (totalTime > 0) {
+                    std::cout << "Translation time: " << std::fixed << std::setprecision(2) 
+                             << totalTime << "ms\n";
+                }
+            }
+            
             return EXIT_SUCCESS;
         } else {
-            std::cout << "\nTranslation failed with " << errors.size() << " error(s)\n";
+            if (errorReporter.hasErrors()) {
+                std::cout << "\nTranslation failed due to errors. Please fix the issues above.\n";
+            } else {
+                std::cout << "\nTranslation failed with " << errors.size() << " error(s)\n";
+            }
             return EXIT_FAILURE;
         }
         
     } catch (const std::exception& e) {
-        std::cerr << "Fatal error: " << e.what() << std::endl;
+        auto& errorReporter = utils::getGlobalErrorReporter();
+        errorReporter.fatal("Unhandled exception occurred", {}, 
+                           "This is likely a bug in the translator. Please report this issue.");
+        errorReporter.error(e.what());
+        errorReporter.printDiagnostics();
         return EXIT_FAILURE;
     } catch (...) {
-        std::cerr << "Unknown fatal error occurred" << std::endl;
+        auto& errorReporter = utils::getGlobalErrorReporter();
+        errorReporter.fatal("Unknown fatal error occurred", {}, 
+                           "This is likely a serious bug. Please report this issue with your input files.");
+        errorReporter.printDiagnostics();
         return EXIT_FAILURE;
     }
 }

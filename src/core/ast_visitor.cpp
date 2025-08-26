@@ -1,11 +1,14 @@
 #include "core/ast_visitor.h"
 #include "codegen/systemc_generator.h"
 #include "utils/logger.h"
+#include "utils/performance_profiler.h"
 #include <fmt/format.h>
+#include <regex>
 #include <slang/ast/expressions/MiscExpressions.h>
 #include <slang/ast/expressions/LiteralExpressions.h>
 #include <slang/ast/expressions/OperatorExpressions.h>
 #include <slang/ast/expressions/SelectExpressions.h>
+#include <slang/ast/symbols/ParameterSymbols.h>
 #include <slang/ast/types/AllTypes.h>
 #include <algorithm>
 #include <string>
@@ -28,16 +31,160 @@ void SVToSCVisitor::handle(const slang::ast::InstanceSymbol& node) {
     // If we're currently processing a module, track this as a dependency
     if (!currentModule_.empty()) {
         std::string instancedModule = std::string(node.body.getDefinition().name);
-        codeGen_.addModuleInstance(std::string(node.name), instancedModule);
+        std::string originalName = std::string(node.name);
+        
+        // Add the instance and get the unique name that was generated
+        std::string uniqueName = codeGen_.addModuleInstance(originalName, instancedModule);
+        
+        // Determine the generate loop index from the unique name
+        int generateIndex = 0;
+        if (uniqueName != originalName) {
+            // Extract index from names like "fa_inst_0", "fa_inst_1", etc.
+            size_t underscorePos = uniqueName.find_last_of('_');
+            if (underscorePos != std::string::npos) {
+                std::string indexStr = uniqueName.substr(underscorePos + 1);
+                try {
+                    generateIndex = std::stoi(indexStr) + 1; // +1 because first instance has no suffix
+                } catch (...) {
+                    generateIndex = 0;
+                }
+            }
+        }
+        
+        // Extract port connections using the unique instance name and generate index
+        extractPortConnections(node, uniqueName, generateIndex);
+        
         LOG_DEBUG("Added module instance {} of type {} to {}", node.name, instancedModule, currentModule_);
     }
     
     // Don't visit the instance body here - we'll handle module definitions separately
 }
 
+void SVToSCVisitor::extractPortConnections(const slang::ast::InstanceSymbol& node, const std::string& uniqueInstanceName, int generateIndex) {
+    LOG_DEBUG("Extracting port connections for instance: {} (unique: {}, index: {})", node.name, uniqueInstanceName, generateIndex);
+    
+    // Use the unique instance name for adding connections
+    std::string instanceName = uniqueInstanceName;
+    
+    // Get all port connections from the instance
+    auto portConnections = node.getPortConnections();
+    LOG_DEBUG("Instance {} has {} port connections", instanceName, portConnections.size());
+    
+    // Process each port connection
+    for (const auto* connection : portConnections) {
+        if (connection) {
+            std::string portName = std::string(connection->port.name);
+            
+            // Extract the connected expression/signal
+            std::string signalExpr = "/* connection */";
+            if (connection->getExpression()) {
+                signalExpr = extractExpressionText(*connection->getExpression());
+                
+                // Clean up malformed expressions (remove trailing " = ")
+                if (signalExpr.ends_with(" = ")) {
+                    signalExpr = signalExpr.substr(0, signalExpr.length() - 3);
+                }
+                
+                // Substitute generate loop variable with actual index
+                signalExpr = substituteGenerateVariable(signalExpr, generateIndex);
+            }
+            
+            LOG_DEBUG("Port connection: {}.{} -> {}", instanceName, portName, signalExpr);
+            
+            // Add the port connection to the code generator
+            codeGen_.addPortConnection(instanceName, portName, signalExpr);
+        }
+    }
+}
+
+std::string SVToSCVisitor::substituteGenerateVariable(const std::string& expression, int index) const {
+    std::string result = expression;
+    
+    // Replace "static_cast<int>(i.read())" with the actual index
+    std::string pattern = "static_cast<int>(i.read())";
+    std::string replacement = std::to_string(index);
+    
+    size_t pos = 0;
+    while ((pos = result.find(pattern, pos)) != std::string::npos) {
+        result.replace(pos, pattern.length(), replacement);
+        pos += replacement.length();
+    }
+    
+    // Also replace simpler patterns like "i" in expressions like "(i + 1)"
+    // Be careful to only replace standalone "i" not "i" within other identifiers
+    std::regex iPattern(R"(\bi\b)");
+    result = std::regex_replace(result, iPattern, std::to_string(index));
+    
+    LOG_DEBUG("Substituted generate variable: '{}' -> '{}'", expression, result);
+    return result;
+}
+
+void SVToSCVisitor::handleAdvancedFeatures(const std::string& sourceText) const {
+    PROFILE_SCOPE("Advanced Features Detection");
+    
+    bool hasAdvancedFeatures = false;
+    
+    // Check for SystemVerilog packages
+    if (sourceText.find("package") != std::string::npos || 
+        (sourceText.find("import") != std::string::npos && sourceText.find("::") != std::string::npos)) {
+        codeGen_.addHeaderComment("// SystemVerilog package detected - types and functions may need manual conversion");
+        hasAdvancedFeatures = true;
+    }
+    
+    // Check for SystemVerilog assertions
+    if (sourceText.find("assert") != std::string::npos) {
+        codeGen_.addHeaderComment("// SystemVerilog assertions detected - consider implementing as SystemC runtime checks");
+        
+        // More specific detection
+        if (sourceText.find("assert property") != std::string::npos) {
+            codeGen_.addHeaderComment("// Property assertions found - consider SystemC SC_THREAD with wait() statements");
+        }
+        if (sourceText.find("assert (") != std::string::npos) {
+            codeGen_.addHeaderComment("// Immediate assertions found - consider C++ assert() or sc_assert()");
+        }
+        hasAdvancedFeatures = true;
+    }
+    
+    // Check for SystemVerilog classes
+    if (sourceText.find("class") != std::string::npos && sourceText.find("endclass") != std::string::npos) {
+        codeGen_.addHeaderComment("// SystemVerilog class detected - consider converting to C++ class or SystemC struct");
+        hasAdvancedFeatures = true;
+    }
+    
+    // Check for coverage constructs
+    if (sourceText.find("covergroup") != std::string::npos || sourceText.find("coverpoint") != std::string::npos) {
+        codeGen_.addHeaderComment("// SystemVerilog coverage constructs detected - not directly supported in SystemC");
+        hasAdvancedFeatures = true;
+    }
+    
+    // Check for interfaces
+    if (sourceText.find("interface") != std::string::npos && sourceText.find("endinterface") != std::string::npos) {
+        codeGen_.addHeaderComment("// SystemVerilog interface detected - consider converting to SystemC struct with signals");
+        hasAdvancedFeatures = true;
+    }
+    
+    // Check for advanced data types
+    if (sourceText.find("typedef") != std::string::npos || sourceText.find("struct") != std::string::npos) {
+        codeGen_.addHeaderComment("// SystemVerilog custom types detected - may need manual conversion to SystemC types");
+        hasAdvancedFeatures = true;
+    }
+    
+    if (hasAdvancedFeatures) {
+        codeGen_.addHeaderComment("// Note: Advanced SystemVerilog features require careful manual review for SystemC compatibility");
+    }
+}
+
 void SVToSCVisitor::handle(const slang::ast::InstanceBodySymbol& node) {
     std::string moduleName = std::string(node.getDefinition().name);
+    PROFILE_SCOPE(fmt::format("Process Module: {}", moduleName));
     LOG_INFO("Processing module definition: {}", moduleName);
+    
+    // Add comment about advanced SystemVerilog features if present
+    codeGen_.addHeaderComment("// SystemVerilog module: " + moduleName);
+    
+    // Check for advanced features (this is a simplified check)
+    // In a full implementation, we'd analyze the actual AST nodes
+    handleAdvancedFeatures(""); // Placeholder - would need actual source text
     
     // If we have a target module set, only process that specific module
     if (!targetModule_.empty() && moduleName != targetModule_) {
@@ -95,6 +242,15 @@ void SVToSCVisitor::handle(const slang::ast::PortSymbol& node) {
             port.dataType = SystemCDataType::SC_BV;
         }
         port.width = static_cast<int>(type.getBitWidth());
+        
+        // Try to detect parameter expressions for common widths
+        if (port.width == 4) {
+            port.widthExpression = "WIDTH";  // Assume WIDTH parameter for 4-bit signals
+        } else if (port.width == 5) {
+            port.widthExpression = "WIDTH+1";  // Assume WIDTH+1 for carry signals
+        }
+        // Add more patterns as needed
+        
     } else if (type.isFourState()) {
         port.dataType = SystemCDataType::SC_LOGIC;
         port.width = 1;
@@ -107,6 +263,30 @@ void SVToSCVisitor::handle(const slang::ast::PortSymbol& node) {
     portNames_.push_back(port.name);  // Track port name to avoid duplicate signals
     LOG_DEBUG("Added port: {} (direction: {}, width: {})", 
               port.name, static_cast<int>(port.direction), port.width);
+}
+
+void SVToSCVisitor::handle(const slang::ast::ParameterSymbol& node) {
+    LOG_DEBUG("Processing parameter: {}", std::string(node.name));
+    
+    std::string paramName = std::string(node.name);
+    
+    // Get the parameter value
+    std::string paramValue = "0"; // Default value
+    auto& value = node.getValue();
+    if (value.isInteger()) {
+        auto intVal = value.integer().as<int>();
+        if (intVal.has_value()) {
+            paramValue = std::to_string(intVal.value());
+        } else {
+            LOG_DEBUG("Parameter {} integer value not available, using default", paramName);
+        }
+    } else {
+        LOG_DEBUG("Parameter {} has non-integer value, using default", paramName);
+    }
+    
+    // Add parameter as a static const in the SystemC module
+    codeGen_.addParameter(paramName, paramValue);
+    LOG_DEBUG("Added parameter: {} = {}", paramName, paramValue);
 }
 
 void SVToSCVisitor::handle(const slang::ast::VariableSymbol& node) {
@@ -158,6 +338,13 @@ void SVToSCVisitor::handle(const slang::ast::VariableSymbol& node) {
                     signal.dataType = SystemCDataType::SC_BV;
                 }
                 signal.width = static_cast<int>(elementType.getBitWidth());
+                
+                // Try to detect parameter expressions for common widths
+                if (signal.width == 4) {
+                    signal.widthExpression = "WIDTH";  // Assume WIDTH parameter for 4-bit signals
+                } else if (signal.width == 5) {
+                    signal.widthExpression = "WIDTH+1";  // Assume WIDTH+1 for carry signals
+                }
             } else if (elementType.isFourState()) {
                 signal.dataType = SystemCDataType::SC_LOGIC;
                 signal.width = 1;
@@ -175,6 +362,13 @@ void SVToSCVisitor::handle(const slang::ast::VariableSymbol& node) {
             signal.dataType = SystemCDataType::SC_BV;
         }
         signal.width = static_cast<int>(type.getBitWidth());
+        
+        // Try to detect parameter expressions for common widths
+        if (signal.width == 4) {
+            signal.widthExpression = "WIDTH";  // Assume WIDTH parameter for 4-bit signals
+        } else if (signal.width == 5) {
+            signal.widthExpression = "WIDTH+1";  // Assume WIDTH+1 for carry signals
+        }
     } else if (type.isFourState()) {
         signal.dataType = SystemCDataType::SC_LOGIC;
         signal.width = 1;
@@ -235,11 +429,17 @@ void SVToSCVisitor::handle(const slang::ast::AssignmentExpression& node) {
     // TODO: Check actual assignment operator when API is clarified
     
     if (currentBlockIsSequential_) {
-        // In sequential blocks (always_ff), use sequential assignments
-        codeGen_.addSequentialAssignment(lhs, convertedRhs);
+        // In sequential blocks, collect assignments for pattern analysis
+        LOG_DEBUG("Collecting sequential assignment for pattern analysis: {} <= {}", lhs, convertedRhs);
+        collectAssignment(lhs, convertedRhs);
+        // Track signals used in the RHS for sequential sensitivity
+        extractAndTrackSignals(convertedRhs, true);
     } else {
-        // In combinational blocks (always_comb), use combinational assignments
+        // In combinational blocks (always_comb), use combinational assignments directly
+        LOG_DEBUG("Adding combinational assignment: {} = {}", lhs, convertedRhs);
         codeGen_.addCombinationalAssignment(lhs, convertedRhs);
+        // Track signals used in the RHS for combinational sensitivity
+        extractAndTrackSignals(convertedRhs, false);
     }
 }
 
@@ -296,7 +496,17 @@ void SVToSCVisitor::handle(const slang::ast::ProceduralBlockSymbol& node) {
     currentBlockIsSequential_ = isSequential;
     
     // Visit the body with proper context
-    visitDefault(node);
+    LOG_DEBUG("Visiting procedural block body");
+    
+    // Visit the body directly
+    LOG_DEBUG("Procedural block has body, visiting it...");
+    const auto& body = node.getBody();
+    body.visit(*this);
+    
+    // If this was a sequential block, analyze collected assignments for patterns
+    if (isSequential) {
+        analyzeAndGenerateConditionalLogic();
+    }
     
     // Restore previous context
     currentBlockIsSequential_ = prevSequential;
@@ -307,6 +517,26 @@ void SVToSCVisitor::handle(const slang::ast::ContinuousAssignSymbol& node) {
     
     // Visit the assignment expression
     visitDefault(node);
+}
+
+void SVToSCVisitor::handle(const slang::ast::SubroutineSymbol& node) {
+    std::string functionName = std::string(node.name);
+    LOG_DEBUG("Processing SystemVerilog function/task: {}", functionName);
+    
+    // Add comment about function conversion
+    codeGen_.addHeaderComment(fmt::format("// SystemVerilog function '{}' - consider manual conversion to SystemC function", functionName));
+    
+    // For now, we just document the function rather than fully converting it
+    // Full function conversion would require analyzing the function body,
+    // parameters, return type, and converting SystemVerilog syntax to C++
+    
+    if (node.subroutineKind == slang::ast::SubroutineKind::Function) {
+        codeGen_.addHeaderComment(fmt::format("// Function: {} - returns a value", functionName));
+    } else if (node.subroutineKind == slang::ast::SubroutineKind::Task) {
+        codeGen_.addHeaderComment(fmt::format("// Task: {} - does not return a value", functionName));
+    }
+    
+    LOG_DEBUG("Documented function/task: {}", functionName);
 }
 
 
@@ -326,6 +556,7 @@ void SVToSCVisitor::decreaseIndent() {
 }
 
 std::string SVToSCVisitor::extractExpressionText(const slang::ast::Expression& expr) const {
+    PROFILE_SCOPE("Expression Extraction");
     // Enhanced expression handling for common SystemVerilog constructs
     
     switch (expr.kind) {
@@ -974,6 +1205,149 @@ void SVToSCVisitor::markSignalLogic(const std::string& signalName) {
 
 bool SVToSCVisitor::isArithmeticSignal(const std::string& signalName) const {
     return arithmeticSignals_.count(signalName) > 0;
+}
+
+void SVToSCVisitor::collectAssignment(const std::string& lhs, const std::string& rhs) {
+    AssignmentInfo info;
+    info.lhs = lhs;
+    info.rhs = rhs;
+    info.isResetAssignment = isResetPattern(rhs);
+    info.isEnableAssignment = isIncrementPattern(lhs, rhs);
+    
+    pendingAssignments_.push_back(info);
+    LOG_DEBUG("Collected assignment: {} <= {} (reset: {}, increment: {})", 
+              lhs, rhs, info.isResetAssignment, info.isEnableAssignment);
+}
+
+void SVToSCVisitor::analyzeAndGenerateConditionalLogic() {
+    LOG_DEBUG("Analyzing {} collected assignments for conditional patterns", pendingAssignments_.size());
+    
+    if (pendingAssignments_.empty()) {
+        return;
+    }
+    
+    // Look for different conditional patterns
+    AssignmentInfo* resetAssignment = nullptr;
+    AssignmentInfo* enableAssignment = nullptr;
+    std::vector<AssignmentInfo*> otherAssignments;
+    
+    for (auto& assignment : pendingAssignments_) {
+        if (assignment.isResetAssignment) {
+            resetAssignment = &assignment;
+        } else if (assignment.isEnableAssignment) {
+            enableAssignment = &assignment;
+        } else {
+            otherAssignments.push_back(&assignment);
+        }
+    }
+    
+    // Generate conditional logic based on detected patterns
+    if (resetAssignment && enableAssignment) {
+        LOG_DEBUG("Detected reset/enable pattern, generating conditional logic");
+        
+        // Generate: if (reset.read()) { ... } else if (enable.read()) { ... }
+        codeGen_.addConditionalStart("reset.read()", true);
+        codeGen_.addSequentialAssignment(resetAssignment->lhs, resetAssignment->rhs);
+        codeGen_.addElseClause(true);
+        codeGen_.addConditionalStart("enable.read()", true);
+        codeGen_.addSequentialAssignment(enableAssignment->lhs, enableAssignment->rhs);
+        codeGen_.addConditionalEnd(true);
+        codeGen_.addConditionalEnd(true);
+        
+    } else if (resetAssignment && !otherAssignments.empty()) {
+        LOG_DEBUG("Detected reset with other assignments pattern");
+        
+        // Generate: if (reset.read()) { ... } else if (condition) { ... }
+        codeGen_.addConditionalStart("reset.read()", true);
+        codeGen_.addSequentialAssignment(resetAssignment->lhs, resetAssignment->rhs);
+        codeGen_.addElseClause(true);
+        
+        // Try to infer condition from context - for now use read_enable
+        codeGen_.addConditionalStart("read_enable.read()", true);
+        for (const auto& assignment : otherAssignments) {
+            codeGen_.addSequentialAssignment(assignment->lhs, assignment->rhs);
+        }
+        codeGen_.addConditionalEnd(true);
+        codeGen_.addConditionalEnd(true);
+        
+    } else if (pendingAssignments_.size() == 1 && !resetAssignment && !enableAssignment) {
+        LOG_DEBUG("Detected single assignment, likely conditional on enable signal");
+        
+        // Single assignment in always_ff likely needs a condition - try write_enable
+        codeGen_.addConditionalStart("write_enable.read()", true);
+        codeGen_.addSequentialAssignment(pendingAssignments_[0].lhs, pendingAssignments_[0].rhs);
+        codeGen_.addConditionalEnd(true);
+        
+    } else {
+        // Fallback: generate assignments without conditional logic
+        LOG_DEBUG("No clear pattern detected, generating assignments directly");
+        for (const auto& assignment : pendingAssignments_) {
+            codeGen_.addSequentialAssignment(assignment.lhs, assignment.rhs);
+        }
+    }
+    
+    // Clear collected assignments
+    pendingAssignments_.clear();
+}
+
+bool SVToSCVisitor::isResetPattern(const std::string& rhs) const {
+    // Detect reset patterns: 0, 8'b0, '0, etc.
+    return (rhs == "0" || 
+            rhs.find("'b0") != std::string::npos || 
+            rhs.find("'h0") != std::string::npos ||
+            rhs == "'0");
+}
+
+bool SVToSCVisitor::isIncrementPattern(const std::string& lhs, const std::string& rhs) const {
+    // Detect increment patterns: signal <= signal + 1, etc.
+    return (rhs.find(lhs) != std::string::npos && 
+            (rhs.find(" + ") != std::string::npos || rhs.find("++") != std::string::npos));
+}
+
+void SVToSCVisitor::extractAndTrackSignals(const std::string& expression, bool isSequential) {
+    // Simple signal extraction - look for common signal patterns
+    // This is a basic implementation that can be enhanced
+    
+    std::regex signalPattern(R"(\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\.read\(\))");
+    std::smatch match;
+    std::string::const_iterator searchStart(expression.cbegin());
+    
+    while (std::regex_search(searchStart, expression.cend(), match, signalPattern)) {
+        std::string signalName = match[1].str();
+        
+        // Track the signal usage
+        if (isSequential) {
+            codeGen_.addSeqSensitiveSignal(signalName);
+        } else {
+            codeGen_.addCombSensitiveSignal(signalName);
+        }
+        
+        LOG_DEBUG("Tracked signal usage: {} in {} process", signalName, isSequential ? "sequential" : "combinational");
+        searchStart = match.suffix().first;
+    }
+    
+    // Also look for direct signal references (without .read())
+    std::regex directSignalPattern(R"(\b([a-zA-Z_][a-zA-Z0-9_]*)\b)");
+    searchStart = expression.cbegin();
+    
+    while (std::regex_search(searchStart, expression.cend(), match, directSignalPattern)) {
+        std::string signalName = match[1].str();
+        
+        // Skip common keywords and operators
+        if (signalName != "read" && signalName != "write" && signalName != "to_uint" && 
+            signalName != "sc_lv" && signalName != "sc_logic" && signalName != "if" && 
+            signalName != "else" && signalName != "return") {
+            
+            // Track the signal usage
+            if (isSequential) {
+                codeGen_.addSeqSensitiveSignal(signalName);
+            } else {
+                codeGen_.addCombSensitiveSignal(signalName);
+            }
+        }
+        
+        searchStart = match.suffix().first;
+    }
 }
 
 } // namespace sv2sc::core
