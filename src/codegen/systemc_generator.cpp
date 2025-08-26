@@ -56,11 +56,10 @@ void SystemCCodeGenerator::endModule() {
         return;
     }
     
-    // Complete header
+    // Complete header with proper separation
     module->headerCode << "\n";
-    module->headerCode << getIndent() << "SC_CTOR(" << currentModule_ << ") {\n";
-    module->headerCode << generateConstructorForModule(*module);
-    module->headerCode << getIndent() << "}\n";
+    module->headerCode << getIndent() << "SC_HAS_PROCESS(" << currentModule_ << ");\n";
+    module->headerCode << getIndent() << currentModule_ << "(sc_module_name name);\n";
     module->headerCode << generateProcessMethodsForModule(*module);
     module->headerCode << "};\n\n";
     module->headerCode << "#endif\n";
@@ -68,8 +67,8 @@ void SystemCCodeGenerator::endModule() {
     // Mark module as complete
     module->isComplete = true;
     
-    // Complete implementation - constructor body is now in header only
-    module->implCode.str(""); // Clear implementation since we're using header-only approach
+    // Implementation is now generated separately in generateModuleImplementation()
+    // No need to populate implCode here as it's generated on demand
     
     LOG_INFO("Completed SystemC code generation for module: {}", currentModule_);
 }
@@ -432,8 +431,9 @@ std::string SystemCCodeGenerator::generateModuleHeader(const std::string& module
     // Module instances
     header << generateModuleInstances(module);
     
-    // Constructor
-    header << "\n    SC_CTOR(" << moduleName << ");\n";
+    // Constructor - use SC_HAS_PROCESS for proper separation
+    header << "\n    SC_HAS_PROCESS(" << moduleName << ");\n";
+    header << "    " << moduleName << "(sc_module_name name);\n";
     
     // Process methods
     header << generateProcessMethodsForModule(module);
@@ -447,10 +447,32 @@ std::string SystemCCodeGenerator::generateModuleHeader(const std::string& module
 
 std::string SystemCCodeGenerator::generateModuleImplementation(const std::string& moduleName) const {
     auto it = modules_.find(moduleName);
-    if (it != modules_.end() && it->second->isComplete) {
-        return it->second->implCode.str();
+    if (it == modules_.end() || !it->second->isComplete) {
+        return "";
     }
-    return "";
+    
+    const auto& module = *it->second;
+    std::stringstream impl;
+    
+    // Include the header
+    impl << "#include \"" << moduleName << ".h\"\n\n";
+    
+    // Generate constructor implementation
+    impl << moduleName << "::" << moduleName << "(sc_module_name name) : sc_module(name) {\n";
+    impl << generateConstructorForModule(module);
+    impl << "}\n\n";
+    
+    // Generate process method implementations
+    impl << generateProcessMethodImplementations(module, moduleName);
+    
+    // Add any additional implementation from implCode if present
+    std::string additionalImpl = module.implCode.str();
+    if (!additionalImpl.empty()) {
+        impl << "\n// Additional implementation\n";
+        impl << additionalImpl;
+    }
+    
+    return impl.str();
 }
 
 std::vector<std::string> SystemCCodeGenerator::getGeneratedModuleNames() const {
@@ -728,7 +750,7 @@ std::string SystemCCodeGenerator::generateConstructorForModule(const ModuleData&
     return constructor.str();
 }
 
-// Helper method for generating process methods specific to a module
+// Helper method for generating process method DECLARATIONS for header
 std::string SystemCCodeGenerator::generateProcessMethodsForModule(const ModuleData& module) const {
     std::stringstream methods;
     
@@ -738,11 +760,9 @@ std::string SystemCCodeGenerator::generateProcessMethodsForModule(const ModuleDa
     if (hasProcessBlocks) {
         methods << "\nprivate:\n";
         
-        // Generate methods for each process block
+        // Only declare methods in header
         for (const auto& block : module.processBlocks) {
-            methods << "    void " << block.name << "() {\n";
-            methods << block.code.str();
-            methods << "    }\n\n";
+            methods << "    void " << block.name << "();\n";
         }
         
         return methods.str();
@@ -756,29 +776,69 @@ std::string SystemCCodeGenerator::generateProcessMethodsForModule(const ModuleDa
     if (hasAnyProcesses) {
         methods << "\nprivate:\n";
         
-        // Generate combinational process method if we have combinational logic
+        // Only declare methods in header
         if (module.hasCombProcess && !module.combProcessCode.str().empty()) {
-            methods << "    void comb_proc() {\n";
-            methods << module.combProcessCode.str();
-            methods << "    }\n";
+            methods << "    void comb_proc();\n";
         }
         
-        // Generate sequential process method if we have sequential logic
         if (module.hasSeqProcess && !module.seqProcessCode.str().empty()) {
-            methods << "    void seq_proc() {\n";
-            methods << module.seqProcessCode.str();
-            methods << "    }\n";
+            methods << "    void seq_proc();\n";
         }
         
-        // Legacy: handle old single process code for backward compatibility
         if (!module.processCode.str().empty() && !module.hasCombProcess && !module.hasSeqProcess) {
-            methods << "    void comb_proc() {\n";
-            methods << module.processCode.str();
-            methods << "    }\n";
+            methods << "    void comb_proc();\n";
         }
     }
     
     return methods.str();
+}
+
+// New helper method for generating process method IMPLEMENTATIONS for .cpp file
+std::string SystemCCodeGenerator::generateProcessMethodImplementations(const ModuleData& module, 
+                                                                      const std::string& moduleName) const {
+    std::stringstream implementations;
+    
+    // Check for new-style process blocks first
+    bool hasProcessBlocks = !module.processBlocks.empty();
+    
+    if (hasProcessBlocks) {
+        // Generate method implementations
+        for (const auto& block : module.processBlocks) {
+            implementations << "void " << moduleName << "::" << block.name << "() {\n";
+            implementations << block.code.str();
+            implementations << "}\n\n";
+        }
+        
+        return implementations.str();
+    }
+    
+    // Legacy process generation
+    bool hasAnyProcesses = !module.processCode.str().empty() || 
+                          module.hasCombProcess || 
+                          module.hasSeqProcess;
+    
+    if (hasAnyProcesses) {
+        // Generate method implementations
+        if (module.hasCombProcess && !module.combProcessCode.str().empty()) {
+            implementations << "void " << moduleName << "::comb_proc() {\n";
+            implementations << module.combProcessCode.str();
+            implementations << "}\n\n";
+        }
+        
+        if (module.hasSeqProcess && !module.seqProcessCode.str().empty()) {
+            implementations << "void " << moduleName << "::seq_proc() {\n";
+            implementations << module.seqProcessCode.str();
+            implementations << "}\n\n";
+        }
+        
+        if (!module.processCode.str().empty() && !module.hasCombProcess && !module.hasSeqProcess) {
+            implementations << "void " << moduleName << "::comb_proc() {\n";
+            implementations << module.processCode.str();
+            implementations << "}\n\n";
+        }
+    }
+    
+    return implementations.str();
 }
 
 // Helper methods for generating forward declarations and includes
@@ -1147,15 +1207,22 @@ void SystemCCodeGenerator::addConditionalStart(const std::string& condition, boo
     
     std::string ifStatement = fmt::format("{}        if ({}) {{\n", getIndent(), condition);
     
-    if (isSequential) {
-        module->hasSeqProcess = true;
-        module->seqProcessCode << ifStatement;
+    // Check if we're using process blocks
+    if (currentProcessBlock_) {
+        currentProcessBlock_->code << ifStatement;
+        LOG_DEBUG("Added conditional start to process block {}: if ({})", 
+                 currentProcessBlock_->name, condition);
     } else {
-        module->hasCombProcess = true;
-        module->combProcessCode << ifStatement;
+        // Legacy behavior
+        if (isSequential) {
+            module->hasSeqProcess = true;
+            module->seqProcessCode << ifStatement;
+        } else {
+            module->hasCombProcess = true;
+            module->combProcessCode << ifStatement;
+        }
+        LOG_DEBUG("Added conditional start: if ({})", condition);
     }
-    
-    LOG_DEBUG("Added conditional start: if ({})", condition);
 }
 
 void SystemCCodeGenerator::addElseClause(bool isSequential) {
@@ -1164,13 +1231,19 @@ void SystemCCodeGenerator::addElseClause(bool isSequential) {
     
     std::string elseStatement = fmt::format("{}        }} else {{\n", getIndent());
     
-    if (isSequential) {
-        module->seqProcessCode << elseStatement;
+    // Check if we're using process blocks
+    if (currentProcessBlock_) {
+        currentProcessBlock_->code << elseStatement;
+        LOG_DEBUG("Added else clause to process block {}", currentProcessBlock_->name);
     } else {
-        module->combProcessCode << elseStatement;
+        // Legacy behavior
+        if (isSequential) {
+            module->seqProcessCode << elseStatement;
+        } else {
+            module->combProcessCode << elseStatement;
+        }
+        LOG_DEBUG("Added else clause");
     }
-    
-    LOG_DEBUG("Added else clause");
 }
 
 void SystemCCodeGenerator::addConditionalEnd(bool isSequential) {
@@ -1179,13 +1252,19 @@ void SystemCCodeGenerator::addConditionalEnd(bool isSequential) {
     
     std::string endStatement = fmt::format("{}        }}\n", getIndent());
     
-    if (isSequential) {
-        module->seqProcessCode << endStatement;
+    // Check if we're using process blocks
+    if (currentProcessBlock_) {
+        currentProcessBlock_->code << endStatement;
+        LOG_DEBUG("Added conditional end to process block {}", currentProcessBlock_->name);
     } else {
-        module->combProcessCode << endStatement;
+        // Legacy behavior
+        if (isSequential) {
+            module->seqProcessCode << endStatement;
+        } else {
+            module->combProcessCode << endStatement;
+        }
+        LOG_DEBUG("Added conditional end");
     }
-    
-    LOG_DEBUG("Added conditional end");
 }
 
 void SystemCCodeGenerator::addCombSensitiveSignal(const std::string& signalName) {

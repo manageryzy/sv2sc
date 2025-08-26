@@ -41,8 +41,13 @@ public:
     void handle(const slang::ast::AssignmentExpression& node);
     void handle(const slang::ast::ExpressionStatement& node);
     void handle(const slang::ast::ProceduralBlockSymbol& node);
+    void handle(const slang::ast::ConditionalStatement& node);
     void handle(const slang::ast::ContinuousAssignSymbol& node);
     void handle(const slang::ast::SubroutineSymbol& node);
+    
+    // Timing control handlers
+    void handle(const slang::ast::TimedStatement& node);
+    void handle(const slang::ast::SignalEventControl& node);
     
     // Generic handler to catch unhandled statement types
     template<typename T>
@@ -64,6 +69,11 @@ private:
     int processBlockCounter_ = 0;
     std::string currentProcessBlockName_;
     bool useProcessBlocks_ = true;  // Enable new process block generation
+    
+    // Sensitivity extraction
+    std::set<std::string> currentSensitivityList_;
+    std::string currentClockSignal_;
+    std::string currentResetSignal_;
     
     // Pattern-based conditional logic detection
     struct AssignmentInfo {

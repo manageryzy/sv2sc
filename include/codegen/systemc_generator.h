@@ -206,6 +206,8 @@ private:
     std::string generateProcessMethods() const;
     std::string generateConstructorForModule(const ModuleData& module) const;
     std::string generateProcessMethodsForModule(const ModuleData& module) const;
+    std::string generateProcessMethodImplementations(const ModuleData& module, 
+                                                    const std::string& moduleName) const;
     bool isSkippingModule() const;
     
     // Process block management

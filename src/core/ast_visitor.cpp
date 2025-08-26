@@ -446,6 +446,74 @@ void SVToSCVisitor::handle(const slang::ast::ExpressionStatement& node) {
     visitDefault(node);
 }
 
+void SVToSCVisitor::handle(const slang::ast::ConditionalStatement& node) {
+    LOG_DEBUG("Processing conditional statement (if-else)");
+    
+    // Get the conditions
+    auto& conditions = node.conditions;
+    
+    if (conditions.empty()) {
+        LOG_WARN("Conditional statement with no conditions");
+        return;
+    }
+    
+    // Build the condition expression (handle multiple conditions as OR)
+    std::string condExpr = "unknown_condition";
+    if (conditions.size() == 1) {
+        // Single condition
+        if (conditions[0].expr) {
+            condExpr = extractExpressionText(*conditions[0].expr);
+            // Ensure signal reads are properly formatted
+            if (isSignalName(condExpr) && condExpr.find(".read()") == std::string::npos) {
+                // Check if it's a logic signal that needs comparison
+                if (condExpr == "reset" || condExpr == "resetn" || condExpr.find("enable") != std::string::npos) {
+                    condExpr = condExpr + ".read() == sc_logic('1')";
+                } else {
+                    condExpr += ".read()";
+                }
+            }
+        }
+    } else {
+        // Multiple conditions (OR them together)
+        std::string combinedCond = "(";
+        bool first = true;
+        for (const auto& condition : conditions) {
+            if (condition.expr) {
+                if (!first) combinedCond += " || ";
+                std::string singleCond = extractExpressionText(*condition.expr);
+                // Ensure signal reads are properly formatted
+                if (isSignalName(singleCond) && singleCond.find(".read()") == std::string::npos) {
+                    // Check if it's a logic signal that needs comparison
+                    if (singleCond == "reset" || singleCond == "resetn" || singleCond.find("enable") != std::string::npos) {
+                        singleCond = singleCond + ".read() == sc_logic('1')";
+                    } else {
+                        singleCond += ".read()";
+                    }
+                }
+                combinedCond += singleCond;
+                first = false;
+            }
+        }
+        combinedCond += ")";
+        condExpr = combinedCond;
+    }
+    
+    // Generate the if statement
+    codeGen_.addConditionalStart(condExpr, currentBlockIsSequential_);
+    
+    // Visit the if-true body
+    node.ifTrue.visit(*this);
+    
+    // Handle else clause if present
+    if (node.ifFalse) {
+        codeGen_.addElseClause(currentBlockIsSequential_);
+        node.ifFalse->visit(*this);
+    }
+    
+    // Close the conditional
+    codeGen_.addConditionalEnd(currentBlockIsSequential_);
+}
+
 void SVToSCVisitor::handle(const slang::ast::ProceduralBlockSymbol& node) {
     using namespace slang::ast;
     
@@ -464,8 +532,7 @@ void SVToSCVisitor::handle(const slang::ast::ProceduralBlockSymbol& node) {
             break;
         case ProceduralBlockKind::Always:
             blockType = "always";
-            // Check if it has clock sensitivity to determine if sequential
-            // TODO: Analyze timing control to detect @(posedge clk)
+            // Will determine from timing control
             isSequential = false;
             break;
         case ProceduralBlockKind::Initial:
@@ -492,8 +559,13 @@ void SVToSCVisitor::handle(const slang::ast::ProceduralBlockSymbol& node) {
     bool prevSequential = currentBlockIsSequential_;
     currentBlockIsSequential_ = isSequential;
     
+    // Clear any previous sensitivity info
+    currentSensitivityList_.clear();
+    currentClockSignal_.clear();
+    currentResetSignal_.clear();
+    
     // Use new process block generation if enabled
-    if (useProcessBlocks_ && isSequential) {
+    if (useProcessBlocks_ && (isSequential || blockType == "always")) {
         // Generate unique name for this process block
         currentProcessBlockName_ = fmt::format("{}_{}", blockType, processBlockCounter_++);
         LOG_DEBUG("Starting new process block: {}", currentProcessBlockName_);
@@ -501,16 +573,12 @@ void SVToSCVisitor::handle(const slang::ast::ProceduralBlockSymbol& node) {
         // Begin new process block
         codeGen_.beginProcessBlock(currentProcessBlockName_, isSequential);
         
-        // TODO: Extract and set sensitivity from timing control
-        // For now, use default clock sensitivity for sequential blocks
-        if (isSequential) {
-            std::set<std::string> sensitivity;
-            sensitivity.insert("clk");  // Default clock signal
-            // Check for reset signal
-            sensitivity.insert("reset");
-            codeGen_.setCurrentBlockSensitivity(sensitivity);
-            codeGen_.setCurrentBlockClock("clk");
-            codeGen_.setCurrentBlockReset("reset");
+        // The sensitivity will be extracted when we visit the TimedStatement
+        // For always_ff, we know it's sequential with clock
+        if (blockType == "always_ff") {
+            // always_ff typically has @(posedge clk) which will be extracted
+            isSequential = true;
+            currentBlockIsSequential_ = true;
         }
     }
     
@@ -1111,9 +1179,13 @@ std::string SVToSCVisitor::extractExpressionText(const slang::ast::Expression& e
 }
 
 bool SVToSCVisitor::isSignalName(const std::string& name) const {
-    // Simple heuristic: signals are typically internal registers like count_reg, mem_array, etc.
-    // Check if the name is in our declared signals set, or has common signal name patterns
+    // Check if the name is in our declared signals set
     if (declaredSignals_.count(name) > 0) {
+        return true;
+    }
+    
+    // Also check if it's a port name (ports also need .read() in SystemC)
+    if (std::find(portNames_.begin(), portNames_.end(), name) != portNames_.end()) {
         return true;
     }
     
@@ -1379,6 +1451,66 @@ void SVToSCVisitor::extractAndTrackSignals(const std::string& expression, bool i
         }
         
         searchStart = match.suffix().first;
+    }
+}
+
+void SVToSCVisitor::handle(const slang::ast::TimedStatement& node) {
+    using namespace slang::ast;
+    
+    LOG_DEBUG("Processing timed statement");
+    
+    // Extract sensitivity from the timing control
+    // The timing control tells us what signals/events to be sensitive to
+    node.timing.visit(*this);
+    
+    // Now visit the statement that follows the timing control
+    node.stmt.visit(*this);
+}
+
+void SVToSCVisitor::handle(const slang::ast::SignalEventControl& node) {
+    using namespace slang::ast;
+    
+    LOG_DEBUG("Processing signal event control");
+    
+    // Extract the signal name from the expression
+    std::string signalName = extractExpressionText(node.expr);
+    
+    // Check the edge type
+    bool isPosedge = (node.edge == EdgeKind::PosEdge);
+    bool isNegedge = (node.edge == EdgeKind::NegEdge);
+    
+    LOG_DEBUG("Signal event: {} on signal {}", 
+             isPosedge ? "posedge" : (isNegedge ? "negedge" : "level"), 
+             signalName);
+    
+    // Add to sensitivity list
+    currentSensitivityList_.insert(signalName);
+    
+    // If it's a clock signal (posedge/negedge on common clock names)
+    if ((isPosedge || isNegedge) && 
+        (signalName == "clk" || signalName == "clock" || 
+         signalName.find("clk") != std::string::npos)) {
+        currentClockSignal_ = signalName;
+        currentBlockIsSequential_ = true;  // This is a clocked process
+        LOG_DEBUG("Detected clock signal: {}", signalName);
+    }
+    
+    // Check for reset signals
+    if (signalName == "reset" || signalName == "rst" || 
+        signalName == "resetn" || signalName == "rst_n") {
+        currentResetSignal_ = signalName;
+        LOG_DEBUG("Detected reset signal: {}", signalName);
+    }
+    
+    // If we have a current process block, update its sensitivity
+    if (useProcessBlocks_ && !currentProcessBlockName_.empty()) {
+        codeGen_.setCurrentBlockSensitivity(currentSensitivityList_);
+        if (!currentClockSignal_.empty()) {
+            codeGen_.setCurrentBlockClock(currentClockSignal_);
+        }
+        if (!currentResetSignal_.empty()) {
+            codeGen_.setCurrentBlockReset(currentResetSignal_);
+        }
     }
 }
 
