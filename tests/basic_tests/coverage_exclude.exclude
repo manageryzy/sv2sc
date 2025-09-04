@@ -1,0 +1,3 @@
+exclude memory.internal
+exclude cpu.debug
+exclude bus.unused

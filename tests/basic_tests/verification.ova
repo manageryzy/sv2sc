@@ -1,0 +1,4 @@
+# OVA Configuration
+property p1: assert always (reset -> next data_valid);
+property p2: assert always (req -> eventually ack);
+property p3: cover sequence (start ##[1:5] done);

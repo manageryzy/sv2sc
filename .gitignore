@@ -208,4 +208,8 @@ CMakeUserPresets.json
 
 .cache
 .claude
-build
+build*
+output
+
+
+

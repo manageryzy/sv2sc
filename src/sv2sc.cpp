@@ -2,6 +2,7 @@
 #include "core/ast_visitor.h"
 #include "codegen/systemc_generator.h"
 #include "utils/logger.h"
+#include "mlir/MLIRTranslator.h"
 #include <slang/syntax/SyntaxTree.h>
 #include <slang/text/SourceManager.h>
 #include <slang/ast/Compilation.h>
@@ -25,12 +26,61 @@ public:
         try {
             LOG_INFO("Starting SystemVerilog to SystemC translation");
             
-            // Always use multi-module design-level compilation for better module handling
-            return processDesign();
+            // Check if MLIR pipeline is requested
+            if (options_.useMLIRPipeline) {
+                return translateWithMLIR();
+            } else {
+                // Use existing direct translation pipeline
+                return processDesign();
+            }
             
         } catch (const std::exception& e) {
             LOG_ERROR("Translation failed with exception: {}", e.what());
             errors_.push_back(fmt::format("Exception: {}", e.what()));
+            return false;
+        }
+    }
+    
+    bool translateWithMLIR() {
+        LOG_INFO("Using MLIR-based translation pipeline");
+        
+        // Check if MLIR support is available
+        if (!mlir_support::isMLIRSupportAvailable()) {
+            std::string error = "MLIR support requested but not available";
+            LOG_ERROR(error);
+            errors_.push_back(error);
+            return false;
+        }
+        
+        LOG_INFO("MLIR version info: {}", mlir_support::getMLIRVersionInfo());
+        
+        try {
+            // Create MLIR-based translator
+            mlir_support::MLIRSystemVerilogToSystemCTranslator mlirTranslator(options_);
+            
+            // Run MLIR translation
+            bool success = mlirTranslator.translate();
+            
+            // Collect errors and warnings from MLIR translator
+            for (const auto& error : mlirTranslator.getErrors()) {
+                errors_.push_back(error);
+            }
+            for (const auto& warning : mlirTranslator.getWarnings()) {
+                warnings_.push_back(warning);
+            }
+            
+            if (success) {
+                LOG_INFO("MLIR-based translation completed successfully");
+            } else {
+                LOG_ERROR("MLIR-based translation failed");
+            }
+            
+            return success;
+            
+        } catch (const std::exception& e) {
+            std::string error = fmt::format("MLIR translation exception: {}", e.what());
+            LOG_ERROR(error);
+            errors_.push_back(error);
             return false;
         }
     }

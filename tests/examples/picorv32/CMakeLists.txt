@@ -3,21 +3,23 @@
 
 # The PicoRV32 processor has a complex interface with many ports and parameters
 # We'll focus on the basic configuration without RISC-V formal verification
-add_complete_sv2sc_test_suite(
+add_sv2sc_test_suite(
     TEST_NAME picorv32_sv2sc
     TOP_MODULE picorv32
     SV_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/../../../third-party/picorv32/picorv32.v
     EXPECTED_PORTS 20  # Base ports without RISCV_FORMAL interface
+    EXPECTED_QUALITY GOOD
 )
 
 # Additional test with simplified configuration
 # This creates a simpler test that disables most advanced features
-add_sv2sc_test(
+add_sv2sc_test_suite(
     TEST_NAME picorv32_simple_sv2sc
     TOP_MODULE picorv32
     SV_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/../../../third-party/picorv32/picorv32.v
-    TRANSLATOR_ARGS -D ENABLE_COUNTERS=0 -D ENABLE_REGS_16_31=0 -D ENABLE_PCPI=0 -D ENABLE_IRQ=0 -D ENABLE_TRACE=0
+    TRANSLATOR_ARGS "-D ENABLE_COUNTERS=0 -D ENABLE_REGS_16_31=0 -D ENABLE_PCPI=0 -D ENABLE_IRQ=0 -D ENABLE_TRACE=0"
     EXPECTED_PORTS 27  # Ports with current defines configuration
+    EXPECTED_QUALITY GOOD
 )
 
 # Note: PicoRV32 is a complex processor core with:

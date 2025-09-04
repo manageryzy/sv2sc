@@ -465,9 +465,9 @@ void SVToSCVisitor::handle(const slang::ast::ConditionalStatement& node) {
             condExpr = extractExpressionText(*conditions[0].expr);
             // Ensure signal reads are properly formatted
             if (isSignalName(condExpr) && condExpr.find(".read()") == std::string::npos) {
-                // Check if it's a logic signal that needs comparison
+                // Check if it's a single-bit signal that needs comparison
                 if (condExpr == "reset" || condExpr == "resetn" || condExpr.find("enable") != std::string::npos) {
-                    condExpr = condExpr + ".read() == sc_logic('1')";
+                    condExpr = condExpr + ".read() == true";
                 } else {
                     condExpr += ".read()";
                 }
@@ -483,9 +483,9 @@ void SVToSCVisitor::handle(const slang::ast::ConditionalStatement& node) {
                 std::string singleCond = extractExpressionText(*condition.expr);
                 // Ensure signal reads are properly formatted
                 if (isSignalName(singleCond) && singleCond.find(".read()") == std::string::npos) {
-                    // Check if it's a logic signal that needs comparison
+                    // Check if it's a single-bit signal that needs comparison
                     if (singleCond == "reset" || singleCond == "resetn" || singleCond.find("enable") != std::string::npos) {
-                        singleCond = singleCond + ".read() == sc_logic('1')";
+                        singleCond = singleCond + ".read() == true";
                     } else {
                         singleCond += ".read()";
                     }
@@ -1512,6 +1512,58 @@ void SVToSCVisitor::handle(const slang::ast::SignalEventControl& node) {
             codeGen_.setCurrentBlockReset(currentResetSignal_);
         }
     }
+}
+
+// Additional expression handlers to fix compilation errors
+void SVToSCVisitor::handle(const slang::ast::TaggedUnionExpression& node) {
+    LOG_DEBUG("Processing tagged union expression");
+    // TaggedUnion expressions are SystemVerilog constructs - convert to C++ equivalent or default values
+    visitDefault(node);
+}
+
+void SVToSCVisitor::handle(const slang::ast::NamedValueExpression& node) {
+    LOG_DEBUG("Processing named value expression: {}", node.symbol.name);
+    // This is typically handled in extractExpressionText, but provide a default handler
+    visitDefault(node);
+}
+
+void SVToSCVisitor::handle(const slang::ast::IntegerLiteral& node) {
+    LOG_DEBUG("Processing integer literal");
+    visitDefault(node);
+}
+
+void SVToSCVisitor::handle(const slang::ast::BinaryExpression& node) {
+    LOG_DEBUG("Processing binary expression");
+    // Analyze for signal usage
+    analyzeExpressionUsage(node);
+    visitDefault(node);
+}
+
+void SVToSCVisitor::handle(const slang::ast::UnaryExpression& node) {
+    LOG_DEBUG("Processing unary expression");
+    // Analyze for signal usage
+    analyzeExpressionUsage(node);
+    visitDefault(node);
+}
+
+void SVToSCVisitor::handle(const slang::ast::ConditionalExpression& node) {
+    LOG_DEBUG("Processing conditional expression");
+    visitDefault(node);
+}
+
+void SVToSCVisitor::handle(const slang::ast::CallExpression& node) {
+    LOG_DEBUG("Processing call expression");
+    visitDefault(node);
+}
+
+void SVToSCVisitor::handle(const slang::ast::ElementSelectExpression& node) {
+    LOG_DEBUG("Processing element select expression");
+    visitDefault(node);
+}
+
+void SVToSCVisitor::handle(const slang::ast::RangeSelectExpression& node) {
+    LOG_DEBUG("Processing range select expression");
+    visitDefault(node);
 }
 
 } // namespace sv2sc::core

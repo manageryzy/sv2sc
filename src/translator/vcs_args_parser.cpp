@@ -191,7 +191,7 @@ bool VCSArgsParser::validateArguments() {
 PlusArg VCSArgsParser::parsePlusArg(const std::string& arg) {
     PlusArg result;
     
-    if (!arg.starts_with("+")) {
+    if (arg.empty() || arg[0] != '+') {
         return result;
     }
     
@@ -782,6 +782,19 @@ bool VCSArgsParser::handleDashCommand(const std::string& arg, int& i, int argc, 
         printVersion();
         return false;
     }
+    // MLIR pipeline options
+    else if (arg == "--use-mlir" || arg == "-mlir") {
+        // Enable MLIR-based translation pipeline
+        args_.useMLIRPipeline = true;
+    }
+    else if (arg == "--mlir-diagnostics") {
+        // Enable MLIR diagnostics output
+        args_.enableMLIRDiagnostics = true;
+    }
+    else if (arg == "--dump-mlir") {
+        // Dump MLIR IR to files for debugging
+        args_.dumpMLIR = true;
+    }
     else if (arg == "-h" || arg == "--help") {
         printHelp();
         return false;
@@ -1237,6 +1250,11 @@ General Options:
   --verbose             Enable verbose output
   -V, --version         Show version information
   -h, --help            Show this help message
+
+MLIR Pipeline Options:
+  --use-mlir, -mlir     Enable MLIR-based translation pipeline
+  --mlir-diagnostics    Enable MLIR diagnostics output
+  --dump-mlir           Dump MLIR IR to files for debugging
 
 Phase 2 Examples:
   # Advanced compilation with optimization

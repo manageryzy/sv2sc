@@ -1,6 +1,6 @@
 # SystemVerilog to SystemC Translator (sv2sc)
 
-A fully functional SystemVerilog to SystemC translator built with modern C++20 and CMake, using the slang SystemVerilog frontend. This translator supports VCS-compatible command-line arguments and comprehensive SystemVerilog language features.
+A fully functional SystemVerilog to SystemC translator built with modern C++17 and CMake, using the slang SystemVerilog frontend. This translator supports VCS-compatible command-line arguments and comprehensive SystemVerilog language features.
 
 ## Features
 
@@ -9,7 +9,7 @@ A fully functional SystemVerilog to SystemC translator built with modern C++20 a
 - **Advanced Constructs**: Generate blocks, 2D arrays, delay modeling
 - **Assignment Types**: Both blocking (=) and non-blocking (<=) assignments
 - **VCS Compatibility**: Full support for VCS-like command-line arguments
-- **Modern C++**: Built with C++20 standards and best practices
+- **Modern C++**: Built with C++17 standards and best practices
 
 ### Supported SystemVerilog Features
 - ✅ Module declarations and instantiation
@@ -25,7 +25,7 @@ A fully functional SystemVerilog to SystemC translator built with modern C++20 a
 
 ## Build Requirements
 
-- **C++20** compatible compiler (GCC 10+, Clang 12+, MSVC 2019+)
+- **C++17** compatible compiler (GCC 7+, Clang 8+, MSVC 2017+)
 - **CMake 3.20** or higher
 - **Git** for dependency management
 
@@ -317,7 +317,7 @@ make generate_example
 ## Contributing
 
 ### Code Style
-- Modern C++20 features
+- Modern C++17 features
 - RAII and smart pointers
 - Clear naming conventions
 - Comprehensive error handling
@@ -337,4 +337,4 @@ This project is licensed under the MIT License. See LICENSE file for details.
 
 - **slang**: Excellent SystemVerilog frontend by MikePopoloski
 - **SystemC**: Accellera SystemC reference implementation
-- **Modern C++**: Built with C++20 best practices
+- **Modern C++**: Built with C++17 best practices

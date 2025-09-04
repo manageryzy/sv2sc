@@ -1111,15 +1111,8 @@ std::string SystemCCodeGenerator::mapDataType(SystemCDataType type, int width, c
 }
 
 std::string SystemCCodeGenerator::generatePortDeclaration(const Port& port) const {
-    // Special handling for clock ports
-    bool isClock = (port.name == "clk" || port.name == "clock") && 
-                   port.direction == PortDirection::INPUT &&
-                   port.width == 1;
-    
-    if (isClock) {
-        // Use sc_in<bool> for clock ports to be compatible with sc_clock
-        return fmt::format("sc_in<bool> {}", port.name);
-    }
+    // Use bool for ALL single-bit ports for consistency (compatible with testbench and sc_clock)
+    bool isSingleBit = (port.width == 1) && (port.direction != PortDirection::INOUT);
     
     std::string direction;
     switch (port.direction) {
@@ -1134,7 +1127,14 @@ std::string SystemCCodeGenerator::generatePortDeclaration(const Port& port) cons
             break;
     }
     
-    std::string dataType = mapDataType(port.dataType, port.width, port.widthExpression);
+    std::string dataType;
+    if (isSingleBit) {
+        // Use bool for all single-bit ports for type consistency
+        dataType = "bool";
+    } else {
+        dataType = mapDataType(port.dataType, port.width, port.widthExpression);
+    }
+    
     std::string decl = fmt::format("{}<{}> {}", direction, dataType, port.name);
     
     // Handle arrays
@@ -1163,8 +1163,14 @@ std::string SystemCCodeGenerator::generateSignalDeclaration(const Signal& signal
         // Use unsigned int for single-bit arithmetic
         dataType = "unsigned int";
     } else {
-        // Use standard logic type mapping for non-arithmetic signals
-        dataType = mapDataType(signal.dataType, signal.width, signal.widthExpression);
+        // Use consistent bool type for single-bit signals (same as ports)
+        bool isSingleBit = (signal.width == 1);
+        if (isSingleBit) {
+            dataType = "bool";
+        } else {
+            // Use standard logic type mapping for multi-bit non-arithmetic signals
+            dataType = mapDataType(signal.dataType, signal.width, signal.widthExpression);
+        }
     }
     
     // Handle arrays

@@ -44,6 +44,12 @@ TranslationOptions convertVCSToTranslationOptions(const translator::VCSArguments
     options.enableVerbose = args.enableVerbose;
     options.outputName = args.outputName;
     
+    // MLIR pipeline options
+    options.useMLIRPipeline = args.useMLIRPipeline;
+    options.enableMLIRDiagnostics = args.enableMLIRDiagnostics;
+    options.dumpMLIR = args.dumpMLIR;
+    options.optimizationLevel = args.optimizationLevel;
+    
     // Legacy defines (for backward compatibility)
     options.defines = args.defines;
     

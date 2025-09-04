@@ -1,25 +1,20 @@
-# Tests CMakeLists.txt
+# Main Tests CMakeLists.txt
+# Consolidated test structure for sv2sc project
 
-# Add subdirectories for different test types
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/unit AND IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/unit)
-    add_subdirectory(unit)
+# Include all test categories
+add_subdirectory(basic_tests)
+add_subdirectory(unit_tests)
+
+# Optional heavy C++ test suites (need Catch2, SystemC runtime, Verilator etc.)
+option(SV2SC_ENABLE_HEAVY_TESTS "Build/run heavy C++ test executables" OFF)
+if(SV2SC_ENABLE_HEAVY_TESTS)
+    add_subdirectory(integration_tests)
+    add_subdirectory(functional_tests)
+    add_subdirectory(performance_tests)
+    add_subdirectory(security_tests)
+    add_subdirectory(verification_tests)
+else()
+    message(STATUS "SV2SC_ENABLE_HEAVY_TESTS=OFF: Skipping heavy test suites")
 endif()
 
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/integration AND IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/integration)
-    add_subdirectory(integration)
-endif()
-
-# Only add examples if BUILD_EXAMPLES is not already handling it
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/examples AND IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/examples AND NOT BUILD_EXAMPLES)
-    add_subdirectory(examples)
-endif()
-
-# Add PicoRV32 verification suite
-option(BUILD_PICORV32_VERIFICATION "Build PicoRV32 verification suite" OFF)
-if(BUILD_PICORV32_VERIFICATION)
-    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/verification/picorv32)
-        add_subdirectory(verification/picorv32)
-    else()
-        message(WARNING "PicoRV32 verification directory not found")
-    endif()
-endif()
+add_subdirectory(examples)

@@ -1,0 +1,5 @@
+# UPF Power Configuration
+set_scope [current_design]
+create_power_domain -name PD_TOP -include_scope
+create_supply_net -name VDD -domain PD_TOP
+create_supply_net -name VSS -domain PD_TOP

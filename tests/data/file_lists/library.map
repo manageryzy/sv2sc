@@ -1,0 +1,3 @@
+work -> $SV2SC_PROJECT_ROOT/tests/basic_tests
+std -> $SV2SC_PROJECT_ROOT/tests/basic_tests
+tech -> $SV2SC_PROJECT_ROOT/tests/basic_tests

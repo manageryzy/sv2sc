@@ -39,6 +39,12 @@ struct TranslationOptions {
     bool enableVerbose = false;
     std::string outputName = "simv";
     
+    // MLIR pipeline options
+    bool useMLIRPipeline = false;
+    int optimizationLevel = 1;
+    bool enableMLIRDiagnostics = false;
+    bool dumpMLIR = false;
+    
     // Legacy defines (for backward compatibility)
     std::vector<std::string> defines;
 };

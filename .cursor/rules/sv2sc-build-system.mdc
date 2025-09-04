@@ -1,0 +1,193 @@
+---
+alwaysApply: true
+---
+# SV2SC Build System Rules
+
+## Core Build Configuration
+
+### Main CMakeLists.txt
+The main [CMakeLists.txt](mdc:CMakeLists.txt) configures:
+- C++20 standard requirement
+- Build types (Debug/Release)
+- Feature flags for MLIR/CIRCT
+- Project structure and dependencies
+
+### Key Build Options
+```cmake
+# MLIR/CIRCT support
+SV2SC_ENABLE_MLIR=ON                    # Enable MLIR pipeline
+SV2SC_ENABLE_FULL_LLVM=ON               # Build full LLVM from source
+SV2SC_ENABLE_FULL_CIRCT=ON              # Build full CIRCT from source
+
+# Build configuration
+CMAKE_BUILD_TYPE=Release                 # Optimized build
+BUILD_TESTS=ON                           # Enable test suite
+BUILD_EXAMPLES=ON                        # Enable example translations
+```
+
+## Dependency Management
+
+### External Dependencies
+Managed in [cmake/Dependencies.cmake](mdc:cmake/Dependencies.cmake):
+- **slang**: SystemVerilog parser and AST
+- **fmt**: Modern C++ formatting
+- **CLI11**: Command-line interface
+- **spdlog**: Logging library
+- **Catch2**: Testing framework
+- **SystemC**: SystemC simulation library
+- **LLVM/MLIR/CIRCT**: MLIR infrastructure (when enabled)
+
+### CIRCT Integration
+When `SV2SC_ENABLE_FULL_CIRCT=ON`:
+```cmake
+# Required CIRCT libraries
+CIRCTHW          # Hardware dialect
+CIRCTSeq         # Sequential dialect  
+CIRCTComb        # Combinational dialect
+CIRCTSV          # SystemVerilog dialect
+CIRCTSystemC     # SystemC dialect
+CIRCTSupport     # Support utilities
+```
+
+## MLIR Build Configuration
+
+### src/mlir/CMakeLists.txt
+Configures MLIR-specific build rules:
+- Conditional compilation for mock vs real CIRCT
+- Library linking for MLIR components
+- Include paths for CIRCT headers
+
+### Mock vs Real CIRCT
+```cmake
+if(NOT MLIR_MOCK_MODE)
+    # Link real CIRCT libraries
+    target_link_libraries(sv2sc_mlir PUBLIC
+        CIRCTHW CIRCTSeq CIRCTComb CIRCTSV CIRCTSystemC CIRCTSupport
+    )
+    target_compile_definitions(sv2sc_mlir PUBLIC SV2SC_HAS_REAL_CIRCT)
+else()
+    # Use mock implementation
+    message(STATUS "Using mock MLIR implementation")
+endif()
+```
+
+## Build Commands
+
+### Initial Setup (Full CIRCT)
+```bash
+# Clean build directory
+rm -rf build
+
+# Configure with full CIRCT support
+cmake -B build \
+  -DSV2SC_ENABLE_MLIR=ON \
+  -DSV2SC_ENABLE_FULL_LLVM=ON \
+  -DSV2SC_ENABLE_FULL_CIRCT=ON \
+  -DCMAKE_BUILD_TYPE=Release
+
+# Build (takes 5+ hours for full CIRCT)
+cmake --build build -j$(nproc)
+```
+
+### Development Build (Mock CIRCT)
+```bash
+# Quick development build
+cmake -B build -DSV2SC_ENABLE_MLIR=ON
+cmake --build build -j$(nproc)
+```
+
+### Incremental Build
+```bash
+# Rebuild only changed components
+cmake --build build --target sv2sc -j$(nproc)
+
+# Rebuild MLIR components only
+cmake --build build --target sv2sc_mlir -j$(nproc)
+```
+
+## Testing Infrastructure
+
+### Test Configuration
+Tests are configured in [cmake/SystemCTestUtils.cmake](mdc:cmake/SystemCTestUtils.cmake):
+- SystemC testbench generation
+- Translation validation
+- Performance benchmarking
+
+### Test Execution
+```bash
+# Run all tests
+ctest --test-dir build
+
+# Run specific test categories
+ctest --test-dir build -R unit
+ctest --test-dir build -R integration
+ctest --test-dir build -R translation_test
+```
+
+## Common Build Issues
+
+### CIRCT Build Failures
+If CIRCT build fails:
+1. Check available memory (requires 8GB+)
+2. Increase swap space if needed
+3. Use fewer parallel jobs: `-j4` instead of `-j$(nproc)`
+4. Check network connection for dependency downloads
+
+### Linker Errors
+Common causes:
+- Missing CIRCT libraries when `SV2SC_ENABLE_FULL_CIRCT=ON`
+- Incorrect library linking order
+- Missing include paths
+
+### Compilation Errors
+- Ensure C++20 compiler is available
+- Check CMake version (requires 3.20+)
+- Verify all dependencies are properly fetched
+
+## Performance Optimization
+
+### Build Performance
+```bash
+# Enable ccache for faster rebuilds
+export CCACHE_DIR=/path/to/ccache
+cmake -B build -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+# Use parallel builds
+cmake --build build -j$(nproc)
+
+# Enable LTO for smaller binaries
+cmake -B build -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+```
+
+### Runtime Performance
+- Release builds are 2-3x faster than Debug
+- MLIR mode provides 1.5-45x speedup over standard mode
+- Complex designs benefit most from MLIR optimization
+
+## Development Workflow
+
+### Feature Development
+1. Use mock CIRCT for rapid iteration
+2. Test with standard translation pipeline
+3. Enable full CIRCT for final testing
+4. Run full test suite before committing
+
+### Debugging
+```bash
+# Debug build with symbols
+cmake -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j$(nproc)
+
+# Run with GDB
+gdb --args ./build/src/sv2sc --use-mlir -top module design.sv
+```
+
+### Profiling
+```bash
+# Profile build performance
+cmake --build build --target sv2sc -- -v
+
+# Profile runtime performance
+perf record ./build/src/sv2sc --use-mlir -top module design.sv
+perf report
+```

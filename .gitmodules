@@ -19,3 +19,6 @@
 [submodule "third-party/picorv32"]
 	path = third-party/picorv32
 	url = https://github.com/YosysHQ/picorv32.git
+[submodule "third-party/circt"]
+	path = third-party/circt
+	url = https://github.com/llvm/circt.git

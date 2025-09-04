@@ -1,0 +1,224 @@
+---
+alwaysApply: true
+---
+# SV2SC Testing and Validation Rules
+
+## Test Structure
+
+### Test Organization
+- **Unit Tests**: [tests/unit/](mdc:tests/unit/) - Individual component testing
+- **Integration Tests**: [tests/integration/](mdc:tests/integration/) - End-to-end pipeline testing
+- **Example Tests**: [tests/examples/](mdc:tests/examples/) - Real SystemVerilog designs
+- **Test Data**: [tests/data/](mdc:tests/data/) - Input files and expected outputs
+
+### Example Test Categories
+- **Basic**: [tests/examples/basic_counter/](mdc:tests/examples/basic_counter/) - Simple modules
+- **Memory**: [tests/examples/memory_array/](mdc:tests/examples/memory_array/) - Array handling
+- **Generate**: [tests/examples/generate_example/](mdc:tests/examples/generate_example/) - Generate blocks
+- **Advanced**: [tests/examples/advanced_features/](mdc:tests/examples/advanced_features/) - Complex features
+
+## Test Execution
+
+### Running All Tests
+```bash
+# Run complete test suite
+ctest --test-dir build --verbose
+
+# Run specific test categories
+ctest --test-dir build -R unit
+ctest --test-dir build -R integration
+ctest --test-dir build -R translation_test
+ctest --test-dir build -R systemc_simulation
+```
+
+### Manual Testing
+```bash
+# Test individual modules
+./build/src/sv2sc --use-mlir -top memory tests/examples/memory_array/memory.sv
+./build/src/sv2sc --use-mlir -top generate_adder tests/examples/generate_example/generate_adder.sv
+./build/src/sv2sc --use-mlir -top template_module tests/examples/advanced_features/template_test.sv
+
+# Test complex designs
+./build/src/sv2sc --use-mlir -top picorv32 third-party/picorv32/picorv32.v
+```
+
+## Validation Procedures
+
+### Translation Quality Metrics
+Each test validates:
+- **Port Count**: Expected number of ports translated
+- **Unknown Expressions**: Count of untranslated complex expressions
+- **Skipped Assignments**: Assignments that couldn't be translated
+- **Quality Score**: EXCELLENT/GOOD/FAIR/NEEDS_WORK
+
+### Performance Benchmarks
+```bash
+# Benchmark translation time
+time ./build/src/sv2sc --use-mlir -top module design.sv
+
+# Compare MLIR vs Standard mode
+time ./build/src/sv2sc -top module design.sv
+time ./build/src/sv2sc --use-mlir -top module design.sv
+```
+
+### Expected Performance
+| Design Type | MLIR Time | Standard Time | Target Speedup |
+|-------------|-----------|---------------|----------------|
+| Simple modules | 1-2ms | 2-3ms | 2x |
+| Memory arrays | 2ms | 3ms | 1.5x |
+| Generate blocks | 2ms | 3ms | 1.5x |
+| Complex designs | 2-3ms | 3-4ms | 1.4x |
+| Full CPUs | 9ms | 400ms | 45x |
+
+## Test Reports
+
+### Generated Reports
+Key validation reports in [output/](mdc:output/):
+- [output/MLIR_FINAL_IMPLEMENTATION_REPORT.md](mdc:output/MLIR_FINAL_IMPLEMENTATION_REPORT.md) - Complete implementation status
+- [output/PICORV32_FIX_REPORT.md](mdc:output/PICORV32_FIX_REPORT.md) - PicoRV32 fix documentation
+- [output/MLIR_ARCHITECTURE_ANALYSIS.md](mdc:output/MLIR_ARCHITECTURE_ANALYSIS.md) - Technical analysis
+- [output/MLIR_ROOT_CAUSE_SUMMARY.md](mdc:output/MLIR_ROOT_CAUSE_SUMMARY.md) - Issue investigation
+
+### Test Results Validation
+```bash
+# Check all examples pass
+for f in tests/examples/*/*.sv; do
+    echo "Testing: $f"
+    ./build/src/sv2sc --use-mlir -top "$(basename "$f" .sv)" "$f" 2>&1 | \
+        grep -q "completed successfully" && echo "  ✅ PASS" || echo "  ❌ FAIL"
+done
+```
+
+## Debugging Tests
+
+### Common Test Failures
+1. **Segmentation Fault**: Check MLIR structure validity
+2. **Parse Errors**: Verify SystemVerilog syntax
+3. **Linker Errors**: Check CIRCT library availability
+4. **Performance Regression**: Compare with baseline
+
+### Debug Commands
+```bash
+# Debug with GDB
+gdb --args ./build/src/sv2sc --use-mlir -top module design.sv
+
+# Verbose output
+./build/src/sv2sc --use-mlir --verbose -top module design.sv
+
+# Check generated files
+ls -la output/
+cat output/module.h
+```
+
+### Log Analysis
+```bash
+# Check for errors
+./build/src/sv2sc --use-mlir -top module design.sv 2>&1 | grep -i error
+
+# Check for warnings
+./build/src/sv2sc --use-mlir -top module design.sv 2>&1 | grep -i warn
+
+# Check performance
+./build/src/sv2sc --use-mlir -top module design.sv 2>&1 | grep "Translation time"
+```
+
+## Regression Testing
+
+### Baseline Performance
+Establish performance baselines:
+```bash
+# Create baseline for each test module
+for f in tests/examples/*/*.sv; do
+    module=$(basename "$f" .sv)
+    echo "Baseline for $module:"
+    time ./build/src/sv2sc --use-mlir -top "$module" "$f" > /dev/null 2>&1
+done
+```
+
+### Performance Regression Detection
+```bash
+# Compare current vs baseline
+current_time=$(time ./build/src/sv2sc --use-mlir -top module design.sv 2>&1 | grep "Translation time" | cut -d' ' -f4)
+baseline_time="2.1"  # ms
+if (( $(echo "$current_time > $baseline_time * 1.5" | bc -l) )); then
+    echo "PERFORMANCE REGRESSION: $current_time ms vs $baseline_time ms baseline"
+fi
+```
+
+## Continuous Integration
+
+### Pre-commit Testing
+```bash
+# Run quick tests before commit
+./build/src/sv2sc --use-mlir -top memory tests/examples/memory_array/memory.sv
+./build/src/sv2sc --use-mlir -top generate_adder tests/examples/generate_example/generate_adder.sv
+./build/src/sv2sc --use-mlir -top template_module tests/examples/advanced_features/template_test.sv
+
+# Run full test suite
+ctest --test-dir build
+```
+
+### Release Testing
+```bash
+# Full regression test
+for f in tests/examples/*/*.sv third-party/picorv32/picorv32.v; do
+    module=$(basename "$f" .sv)
+    ./build/src/sv2sc --use-mlir -top "$module" "$f"
+done
+
+# Performance validation
+./build/src/sv2sc --use-mlir -top picorv32 third-party/picorv32/picorv32.v
+# Should complete in <10ms
+```
+
+## Test Data Management
+
+### Temporary Files
+- All test files stored in [tmp/](mdc:tmp/) directory
+- Automatic cleanup after test completion
+- Unique names for parallel test execution
+
+### Test Data Organization
+```bash
+tests/
+├── data/
+│   ├── vcs_test_files/     # VCS-compatible test files
+│   └── expected_outputs/   # Expected translation results
+├── examples/
+│   ├── basic_counter/      # Simple counter module
+│   ├── memory_array/       # Memory and array tests
+│   ├── generate_example/   # Generate block tests
+│   └── advanced_features/  # Complex feature tests
+└── integration/            # End-to-end tests
+```
+
+## Quality Assurance
+
+### Code Coverage
+```bash
+# Build with coverage
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_COVERAGE=ON
+cmake --build build
+ctest --test-dir build
+
+# Generate coverage report
+lcov --capture --directory build --output-file coverage.info
+genhtml coverage.info --output-directory coverage_report
+```
+
+### Static Analysis
+```bash
+# Run clang-tidy
+cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+run-clang-tidy -p build src/
+
+# Run cppcheck
+cppcheck --enable=all --std=c++20 src/
+```
+
+### Memory Leak Detection
+```bash
+# Run with valgrind
+valgrind --leak-check=full --show-leak-kinds=all \
+    ./build/src/sv2sc --use-mlir -top module design.sv
+```

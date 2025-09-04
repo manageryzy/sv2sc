@@ -49,6 +49,17 @@ public:
     void handle(const slang::ast::TimedStatement& node);
     void handle(const slang::ast::SignalEventControl& node);
     
+    // Expression handlers
+    void handle(const slang::ast::TaggedUnionExpression& node);
+    void handle(const slang::ast::NamedValueExpression& node);
+    void handle(const slang::ast::IntegerLiteral& node);
+    void handle(const slang::ast::BinaryExpression& node);
+    void handle(const slang::ast::UnaryExpression& node);
+    void handle(const slang::ast::ConditionalExpression& node);
+    void handle(const slang::ast::CallExpression& node);
+    void handle(const slang::ast::ElementSelectExpression& node);
+    void handle(const slang::ast::RangeSelectExpression& node);
+    
     // Generic handler to catch unhandled statement types
     template<typename T>
     void visitDefault(const T& node) {

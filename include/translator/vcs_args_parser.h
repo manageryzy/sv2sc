@@ -50,6 +50,11 @@ struct VCSArguments {
     std::string clockSignal = "clk";
     std::string resetSignal = "reset";
     
+    // MLIR pipeline options
+    bool useMLIRPipeline = false;
+    bool enableMLIRDiagnostics = false;
+    bool dumpMLIR = false;
+    
     // Phase 2: Advanced File Management
     std::vector<std::string> advancedFileListFiles;  // -F (advanced file list)
     std::vector<std::string> namedFileListFiles;     // -file (named file list)
