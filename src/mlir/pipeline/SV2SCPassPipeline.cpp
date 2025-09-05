@@ -10,6 +10,7 @@
 
 // sv2sc MLIR passes
 #include "mlir/passes/HWToSystemCLoweringPass.h"
+#include "mlir/passes/PrepareHWForSystemCPass.h"
 
 // System includes for stack size detection
 #include <sys/resource.h>
@@ -105,7 +106,10 @@ void SV2SCPassPipeline::buildTransformationPasses(mlir::OpPassManager& pm, int o
 void SV2SCPassPipeline::buildLoweringPasses(mlir::OpPassManager& pm) {
     LOG_DEBUG("Building lowering passes (HW -> SystemC)");
 
-    // Use CIRCT's HW->SystemC conversion with IR dumping for debugging
+    // Phase 3: Add PrepareHWForSystemCPass BEFORE CIRCT conversion to prevent the bug
+    pm.addPass(createPrepareHWForSystemCPass());
+    LOG_DEBUG("Added PrepareHWForSystemCPass (Phase 3 CIRCT bug workaround)");
+    
     // Add IR dump before CIRCT conversion
     pm.addPass(createDebugIRDumpPass("1-before-circt-conversion"));
     

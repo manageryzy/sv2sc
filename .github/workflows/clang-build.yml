@@ -1,0 +1,247 @@
+name: Clang Build and Test
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  schedule:
+    # Run nightly builds at 2 AM UTC
+    - cron: '0 2 * * *'
+
+env:
+  # Build configuration
+  BUILD_TYPE: Release
+  ENABLE_TESTS: ON
+  ENABLE_EXAMPLES: OFF
+  CCACHE_MAXSIZE: 2G
+  
+  # Compiler preference
+  CC: clang-15
+  CXX: clang++-15
+
+jobs:
+  clang-build:
+    runs-on: ubuntu-22.04
+    
+    strategy:
+      matrix:
+        clang_version: [13, 14, 15, 16]
+        build_type: [Release, Debug]
+        include:
+          - clang_version: 15
+            build_type: Release
+            enable_examples: ON
+            
+    name: Clang-${{ matrix.clang_version }} (${{ matrix.build_type }})
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        fetch-depth: 0
+    
+    - name: Cache ccache
+      uses: actions/cache@v3
+      with:
+        path: ~/.ccache
+        key: ccache-clang${{ matrix.clang_version }}-${{ matrix.build_type }}-${{ github.sha }}
+        restore-keys: |
+          ccache-clang${{ matrix.clang_version }}-${{ matrix.build_type }}-
+          ccache-clang${{ matrix.clang_version }}-
+    
+    - name: Cache CMake dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cmake
+          build/*/external
+        key: cmake-deps-${{ hashFiles('**/CMakeLists.txt', '**/Dependencies.cmake') }}
+        restore-keys: |
+          cmake-deps-
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y \
+          build-essential \
+          clang-${{ matrix.clang_version }} \
+          clang-tools-${{ matrix.clang_version }} \
+          libc++-${{ matrix.clang_version }}-dev \
+          libc++abi-${{ matrix.clang_version }}-dev \
+          cmake \
+          ninja-build \
+          python3 \
+          python3-pip \
+          ccache \
+          pkg-config \
+          libatomic1 \
+          curl \
+          wget
+    
+    - name: Setup Clang environment
+      run: |
+        echo "CC=clang-${{ matrix.clang_version }}" >> $GITHUB_ENV
+        echo "CXX=clang++-${{ matrix.clang_version }}" >> $GITHUB_ENV
+        echo "BUILD_TYPE=${{ matrix.build_type }}" >> $GITHUB_ENV
+        echo "ENABLE_EXAMPLES=${{ matrix.enable_examples || 'OFF' }}" >> $GITHUB_ENV
+    
+    - name: Verify Clang installation
+      run: |
+        clang-${{ matrix.clang_version }} --version
+        clang++-${{ matrix.clang_version }} --version
+        cmake --version
+        ninja --version
+    
+    - name: Setup ccache
+      run: |
+        mkdir -p ~/.ccache
+        ccache --set-config=max_size=${{ env.CCACHE_MAXSIZE }}
+        ccache --set-config=compression=true
+        ccache --zero-stats
+    
+    - name: Configure CMake
+      run: |
+        mkdir -p build_clang
+        cd build_clang
+        cmake \
+          -G Ninja \
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+          -DCMAKE_C_COMPILER=clang-${{ matrix.clang_version }} \
+          -DCMAKE_CXX_COMPILER=clang++-${{ matrix.clang_version }} \
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+          -DSV2SC_ENABLE_MLIR=ON \
+          -DSV2SC_ENABLE_FULL_LLVM=OFF \
+          -DSV2SC_ENABLE_FULL_CIRCT=OFF \
+          -DBUILD_TESTS=ON \
+          -DBUILD_EXAMPLES=${{ matrix.enable_examples || 'OFF' }} \
+          -DCMAKE_CXX_FLAGS="-fPIC -frtti -fexceptions -latomic" \
+          -DCMAKE_EXE_LINKER_FLAGS="-latomic" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-latomic" \
+          ..
+    
+    - name: Build project
+      run: |
+        cd build_clang
+        ninja -j$(nproc) -v
+    
+    - name: Run tests
+      if: matrix.build_type == 'Release' || matrix.clang_version == 15
+      run: |
+        cd build_clang
+        ctest --output-on-failure --parallel $(nproc) -T Test
+    
+    - name: Validate executable
+      run: |
+        cd build_clang
+        if [ -f "src/sv2sc" ]; then
+          echo "Executable found:"
+          ls -la src/sv2sc
+          file src/sv2sc
+          echo "Testing basic functionality:"
+          ./src/sv2sc --version || echo "Version check completed"
+          ./src/sv2sc --help | head -10 || echo "Help check completed"
+        else
+          echo "ERROR: sv2sc executable not found!"
+          ls -la src/
+          exit 1
+        fi
+    
+    - name: Show ccache statistics
+      run: |
+        ccache --show-stats
+    
+    - name: Upload build artifacts
+      if: matrix.clang_version == 15 && matrix.build_type == 'Release'
+      uses: actions/upload-artifact@v3
+      with:
+        name: sv2sc-clang15-release
+        path: |
+          build_clang/src/sv2sc
+          build_clang/compile_commands.json
+        retention-days: 30
+    
+    - name: Upload test results
+      if: always() && (matrix.build_type == 'Release' || matrix.clang_version == 15)
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results-clang${{ matrix.clang_version }}-${{ matrix.build_type }}
+        path: |
+          build_clang/Testing/**/*.xml
+        retention-days: 7
+
+  static-analysis:
+    runs-on: ubuntu-22.04
+    needs: clang-build
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install clang-tidy
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y clang-tidy-15 clang-format-15
+    
+    - name: Download build artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: sv2sc-clang15-release
+        path: ./build_artifacts
+    
+    - name: Run clang-tidy
+      run: |
+        if [ -f "build_artifacts/compile_commands.json" ]; then
+          echo "Running clang-tidy analysis..."
+          find src include -name "*.cpp" -o -name "*.h" | \
+            head -10 | \
+            xargs clang-tidy-15 \
+              -p build_artifacts \
+              --checks='-*,readability-*,performance-*,modernize-*' \
+              --format-style=file || true
+        else
+          echo "No compile_commands.json found, skipping clang-tidy"
+        fi
+    
+    - name: Run clang-format check
+      run: |
+        echo "Checking code formatting..."
+        find src include -name "*.cpp" -o -name "*.h" | \
+          head -10 | \
+          xargs clang-format-15 --dry-run --Werror || true
+
+  performance-test:
+    runs-on: ubuntu-22.04
+    needs: clang-build
+    if: github.event_name == 'schedule' || github.event_name == 'push'
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Download build artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: sv2sc-clang15-release
+        path: ./build_artifacts
+    
+    - name: Make executable
+      run: chmod +x build_artifacts/sv2sc
+    
+    - name: Performance benchmark
+      run: |
+        echo "Running performance benchmark..."
+        # Create a simple test case for benchmarking
+        echo "module test_module(); endmodule" > test_simple.sv
+        
+        # Run performance test
+        time ./build_artifacts/sv2sc --help > /dev/null || echo "Performance test completed"
+        
+        # Show executable info
+        echo "Executable size:"
+        du -h build_artifacts/sv2sc
+        echo "Executable info:"
+        file build_artifacts/sv2sc

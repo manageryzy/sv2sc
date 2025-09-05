@@ -9,6 +9,7 @@ message(STATUS "Building MLIR translation infrastructure")
         SVToHWBuilder.cpp
         pipeline/SV2SCPassPipeline.cpp
         passes/HWToSystemCLoweringPass.cpp
+        passes/PrepareHWForSystemCPass.cpp
         systemc/SystemCEmitter.cpp
         systemc/CIRCTCompatibleEmitter.cpp
         systemc/SystemCEmissionPatterns.cpp
@@ -19,6 +20,7 @@ message(STATUS "Building MLIR translation infrastructure")
         ${CMAKE_SOURCE_DIR}/include/mlir/SVToHWBuilder.h
         ${CMAKE_SOURCE_DIR}/include/mlir/pipeline/SV2SCPassPipeline.h
         ${CMAKE_SOURCE_DIR}/include/mlir/passes/HWToSystemCLoweringPass.h
+        ${CMAKE_SOURCE_DIR}/include/mlir/passes/PrepareHWForSystemCPass.h
         ${CMAKE_SOURCE_DIR}/include/mlir/systemc/SystemCEmitter.h
         systemc/CIRCTCompatibleEmitter.h
         systemc/SystemCEmissionPatterns.h

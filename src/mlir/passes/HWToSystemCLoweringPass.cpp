@@ -196,11 +196,26 @@ public:
     FixSystemCSignalReadPass() = default;
     
     void runOnOperation() override {
-        LOG_ERROR("**** RUNNING SystemC signal read fix pass ****");
-        LOG_DEBUG("Running SystemC signal read fix pass");
+        LOG_ERROR("**** RUNNING SystemC signal read fix pass (Phase 3 Enhanced) ****");
+        LOG_DEBUG("Running SystemC signal read fix pass with PrepareHWForSystemCPass coordination");
         
         auto module = getOperation();
         auto context = module.getContext();
+        
+        // Check if modules were prepared by PrepareHWForSystemCPass
+        bool foundPreparedModules = false;
+        module.walk([&](circt::systemc::SCModuleOp scModule) {
+            if (scModule->hasAttr("sv2sc.prepared_for_systemc")) {
+                foundPreparedModules = true;
+                LOG_DEBUG("Found prepared SystemC module: {}", scModule.getModuleName());
+            }
+        });
+        
+        if (foundPreparedModules) {
+            LOG_DEBUG("Processing modules prepared by PrepareHWForSystemCPass");
+        } else {
+            LOG_WARN("No prepared modules found - running standard fix");
+        }
         
         // Handle invalid systemc.signal.read operations from output ports
         llvm::SmallVector<mlir::Operation*> toErase;

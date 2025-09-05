@@ -50,6 +50,18 @@ private:
     std::unordered_map<std::string, mlir::Value> valueMap_;
     std::unordered_map<std::string, mlir::Type> typeMap_;
     
+    // Parameter tracking
+    std::unordered_map<std::string, int64_t> parameterMap_;  // Track parameter values
+    
+    // Sequential logic tracking
+    std::unordered_map<std::string, mlir::Value> registerMap_;  // Track register signals
+    std::unordered_map<std::string, mlir::Value> resetValueMap_; // Track reset values for registers
+    mlir::Value clockSignal_;  // Current clock signal
+    mlir::Value resetSignal_; // Current reset signal
+    bool inAlwaysFF_ = false;  // Track if we're in an always_ff block
+    bool inResetCondition_ = false;  // Track if we're in a reset condition (for reset value detection)
+    int statementDepth_ = 0;  // Track recursion depth to prevent infinite loops
+    
     // Module building methods
     circt::hw::HWModuleOp buildModule(const slang::ast::InstanceBodySymbol& moduleAST);
     void buildPortList(const slang::ast::InstanceBodySymbol& moduleAST,
@@ -68,6 +80,7 @@ private:
     mlir::Value buildReplicationExpression(const slang::ast::Expression& expr);
     mlir::Value buildAssignmentExpression(const slang::ast::Expression& expr);
     mlir::Value buildCallExpression(const slang::ast::Expression& expr);
+    mlir::Value buildConversionExpression(const slang::ast::Expression& expr);
     
     // Statement building methods
     void buildStatement(const slang::ast::Statement& stmt);
@@ -82,6 +95,9 @@ private:
     void buildWhileLoopStatement(const slang::ast::Statement& stmt);
     void buildCaseStatement(const slang::ast::Statement& stmt);
     
+    // Sequential logic generation
+    void generateSequentialLogic();
+    
     // Type conversion utilities
     mlir::Type convertSVTypeToHW(const slang::ast::Type& svType);
     mlir::Type getIntegerType(int width);
@@ -91,11 +107,18 @@ private:
     mlir::Location getLocation(const slang::ast::Symbol& symbol);
     mlir::Location getUnknownLocation();
     std::string sanitizeName(const std::string& name);
+    std::pair<mlir::Value, mlir::Value> ensureMatchingTypes(mlir::Value val1, mlir::Value val2);
+    mlir::Value createTypeSafeMux(mlir::Location loc, mlir::Value condition, mlir::Value trueVal, mlir::Value falseVal);
     
     // Value management
     void setValueForSignal(const std::string& name, mlir::Value value);
     mlir::Value getValueForSignal(const std::string& name);
     bool hasValueForSignal(const std::string& name) const;
+    
+    // Parameter management
+    void setParameter(const std::string& name, int64_t value);
+    int64_t getParameter(const std::string& name) const;
+    bool hasParameter(const std::string& name) const;
 };
 
 } // namespace sv2sc::mlir_support
